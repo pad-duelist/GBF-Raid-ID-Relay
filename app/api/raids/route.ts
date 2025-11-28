@@ -1,80 +1,146 @@
-// app/api/relay/route.ts
-import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+// app/api/raids/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!; // サービスロールキー
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: { persistSession: false },
+});
 
-if (!supabaseUrl || !supabaseServiceKey) {
-  throw new Error('Supabase の環境変数が設定されていません');
+// -------- GET /api/raids --------
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const groupId = searchParams.get("groupId");
+  const bossName = searchParams.get("bossName");
+  const limitParam = searchParams.get("limit") ?? "50";
+
+  const limit = Number(limitParam);
+
+  if (!groupId) {
+    return NextResponse.json(
+      { error: "groupId is required" },
+      { status: 400 }
+    );
+  }
+
+  let query = supabase
+    .from("raids")
+    .select(
+      [
+        "id",
+        "group_id",
+        "raid_id",
+        "boss_name",
+        "battle_name",
+        "hp_value",
+        "hp_percent",
+        "user_name",
+        "created_at",
+        "member_current",
+        "member_max",
+      ].join(",")
+    )
+    .eq("group_id", groupId)
+    .order("created_at", { ascending: false })
+    .limit(isNaN(limit) ? 50 : limit);
+
+  if (bossName) {
+    query = query.eq("boss_name", bossName);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error("GET /api/raids error", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json(data ?? []);
 }
 
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-const TABLE_NAME = 'raids';
-
-type RaidPayload = {
-  roomId: string;            // ← 拡張機能から送っている値
-  raidId: string;
-  bossName?: string;
-  level?: string;
-  joined?: number | null;     // 参戦人数
-  maxPlayers?: number | null; // 最大人数
-};
-
-export async function POST(req: Request) {
+// -------- POST /api/raids --------
+export async function POST(req: NextRequest) {
   try {
-    const body = (await req.json()) as RaidPayload;
-    const { roomId, raidId, bossName, level, joined, maxPlayers } = body;
+    const body = await req.json();
 
-    if (!roomId || !raidId) {
+    const {
+      groupId,
+      raidId,
+      bossName,
+      battleName,
+      hpValue,
+      hpPercent,
+      userName,
+      memberCurrent,
+      memberMax,
+    } = body;
+
+    if (!groupId || !raidId) {
       return NextResponse.json(
-        { error: 'roomId と raidId は必須です' },
+        { error: "groupId and raidId are required" },
         { status: 400 }
       );
     }
 
-    // group_id + raid_id が同じものは一意になるように UPSERT
-    const { data, error } = await supabase
-      .from(TABLE_NAME)
-      .upsert(
-        {
-          group_id: roomId,          // ← DB 側のカラム名
-          raid_id: raidId,
-          boss_name: bossName ?? null,
-          level: level ?? null,
-          joined: joined ?? null,
-          max_players: maxPlayers ?? null,
-        },
-        {
-          onConflict: 'group_id,raid_id',
-          ignoreDuplicates: true,
-        }
-      )
-      .select('id');
+    // 重複チェック
+    const { data: existing, error: selectError } = await supabase
+      .from("raids")
+      .select("id")
+      .eq("group_id", groupId)
+      .eq("raid_id", raidId)
+      .limit(1)
+      .maybeSingle();
 
-    if (error) {
-      console.error('upsert error', error);
+    if (selectError && selectError.code !== "PGRST116") {
+      console.error("select error", selectError);
+    }
+
+    if (existing) {
       return NextResponse.json(
-        { error: 'データ登録に失敗しました' },
+        { ok: true, duplicated: true },
+        { status: 200 }
+      );
+    }
+
+    const { error: insertError } = await supabase.from("raids").insert({
+      group_id: groupId,
+      raid_id: raidId,
+      boss_name: bossName ?? null,
+      battle_name: battleName ?? null,
+      hp_value:
+        hpValue !== undefined && hpValue !== null
+          ? Number(hpValue)
+          : null,
+      hp_percent:
+        hpPercent !== undefined && hpPercent !== null
+          ? Number(hpPercent)
+          : null,
+      user_name: userName ?? null,
+      member_current:
+        memberCurrent !== undefined && memberCurrent !== null
+          ? Number(memberCurrent)
+          : null,
+      member_max:
+        memberMax !== undefined && memberMax !== null
+          ? Number(memberMax)
+          : null,
+    });
+
+    if (insertError) {
+      console.error("insert error", insertError);
+      return NextResponse.json(
+        { error: insertError.message },
         { status: 500 }
       );
     }
 
-    const isDuplicate = !data || data.length === 0;
-
+    return NextResponse.json({ ok: true }, { status: 200 });
+  } catch (e) {
+    console.error("POST /api/raids error", e);
     return NextResponse.json(
-      {
-        ok: true,
-        status: isDuplicate ? 'duplicate_ignored' : 'inserted',
-      },
-      { status: 200 }
-    );
-  } catch (err) {
-    console.error('route error', err);
-    return NextResponse.json(
-      { error: '不正なリクエストです' },
-      { status: 400 }
+      { error: "Unexpected error" },
+      { status: 500 }
     );
   }
 }
