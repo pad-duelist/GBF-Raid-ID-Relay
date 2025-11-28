@@ -1,4 +1,3 @@
-// app/g/[groupId]/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -53,7 +52,8 @@ export default function GroupPage() {
   useEffect(() => {
     setLoading(true);
     fetchRaids();
-    const timer = setInterval(fetchRaids, 3000);
+    // ✅ ここを 3000 → 1000 に変更（1秒ごとに更新）
+    const timer = setInterval(fetchRaids, 1000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId, bossFilter]);
@@ -90,7 +90,8 @@ export default function GroupPage() {
               参戦ID共有ビューア - グループ: {groupId}
             </h1>
             <p className="text-sm text-slate-400">
-              3秒ごとに自動更新 / クリックでIDコピー
+              {/* ✅ 表示文言も 3秒 → 1秒 に変更 */}
+              1秒ごとに自動更新 / クリックでIDコピー
             </p>
           </div>
 
@@ -125,45 +126,45 @@ export default function GroupPage() {
           </div>
         ) : (
           <div className="space-y-2">
-          {raids.map((raid) => {
-  const created = new Date(raid.created_at);
-  const timeAgo = formatTimeAgo(created);
+            {raids.map((raid) => {
+              const created = new Date(raid.created_at);
+              const timeAgo = formatTimeAgo(created);
 
-  const labelName =
-    raid.battle_name || raid.boss_name || "不明なマルチ";
+              const labelName =
+                raid.battle_name || raid.boss_name || "不明なマルチ";
 
-  let hpText = "HP 不明";
-  if (raid.hp_value != null && raid.hp_percent != null) {
-    hpText = `${formatNumberWithComma(
-      raid.hp_value
-    )} HP (${raid.hp_percent.toFixed(1)}%)`;
-  }
+              let hpText = "HP 不明";
+              if (raid.hp_value != null && raid.hp_percent != null) {
+                hpText = `${formatNumberWithComma(
+                  raid.hp_value
+                )} HP (${raid.hp_percent.toFixed(1)}%)`;
+              }
 
-  return (
-    <div
-      key={raid.id}
-      onClick={() => copyId(raid.raid_id)}
-      className="flex items-center justify-between bg-slate-800/80 rounded-lg px-3 py-2 text-sm shadow cursor-pointer hover:bg-slate-700/80 transition-colors"
-    >
-      <div className="flex flex-col">
-        <div className="flex items-center gap-2">
-          <span className="font-mono text-base underline decoration-dotted">
-            {raid.raid_id}
-          </span>
-          <span className="text-xs text-slate-400">{timeAgo}</span>
-        </div>
-        <div className="text-xs text-slate-300">{labelName}</div>
-      </div>
+              return (
+                <div
+                  key={raid.id}
+                  onClick={() => copyId(raid.raid_id)}
+                  className="flex items-center justify-between bg-slate-800/80 rounded-lg px-3 py-2 text-sm shadow cursor-pointer hover:bg-slate-700/80 transition-colors"
+                >
+                  <div className="flex flex-col">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-base underline decoration-dotted">
+                        {raid.raid_id}
+                      </span>
+                      <span className="text-xs text-slate-400">{timeAgo}</span>
+                    </div>
+                    <div className="text-xs text-slate-300">{labelName}</div>
+                  </div>
 
-      <div className="flex flex-col items-end gap-1">
-        <div className="text-xs text-slate-300">
-          {raid.user_name ?? "匿名"}
-        </div>
-        <div className="text-xs text-slate-400">{hpText}</div>
-      </div>
-    </div>
-  );
-})}
+                  <div className="flex flex-col items-end gap-1">
+                    <div className="text-xs text-slate-300">
+                      {raid.user_name ?? "匿名"}
+                    </div>
+                    <div className="text-xs text-slate-400">{hpText}</div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
