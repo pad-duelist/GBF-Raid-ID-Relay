@@ -1,18 +1,38 @@
 // app/api/raids/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseServer } from "@/lib/supabaseServer";
+import { getSupabaseServer } from "@/lib/supabaseServer";
+
+type RaidRecord = {
+  groupId: string;
+  raidId: string;
+  bossName?: string;
+  battleName?: string;
+  hpPercent?: number;
+  hpValue?: number;
+  userName?: string;
+};
+
+function getClientOrErrorResponse() {
+  const client = getSupabaseServer();
+  if (!client) {
+    console.error("Supabase client is not configured.");
+    return {
+      client: null as const,
+      errorResponse: NextResponse.json(
+        { error: "Supabase is not configured" },
+        { status: 500 }
+      ),
+    };
+  }
+  return { client, errorResponse: null as const };
+}
 
 export async function POST(req: NextRequest) {
   try {
-    if (!supabaseServer) {
-      console.error("supabaseServer is not configured");
-      return NextResponse.json(
-        { error: "Supabase is not configured" },
-        { status: 500 }
-      );
-    }
+    const { client, errorResponse } = getClientOrErrorResponse();
+    if (!client) return errorResponse;
 
-    const body = await req.json();
+    const body = (await req.json()) as RaidRecord;
 
     const {
       groupId,
@@ -22,14 +42,6 @@ export async function POST(req: NextRequest) {
       hpPercent,
       hpValue,
       userName,
-    }: {
-      groupId: string;
-      raidId: string;
-      bossName?: string;
-      battleName?: string;
-      hpPercent?: number;
-      hpValue?: number;
-      userName?: string;
     } = body;
 
     if (!groupId || !raidId) {
@@ -39,17 +51,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { error } = await supabaseServer
-      .from("raids")
-      .insert({
-        group_id: groupId,
-        raid_id: raidId,
-        boss_name: bossName ?? null,
-        battle_name: battleName ?? null,
-        hp_value: typeof hpValue === "number" ? hpValue : null,
-        hp_percent: typeof hpPercent === "number" ? hpPercent : null,
-        user_name: userName ?? null,
-      });
+    const { error } = await client.from("raids").insert({
+      group_id: groupId,
+      raid_id: raidId,
+      boss_name: bossName ?? null,
+      battle_name: battleName ?? null,
+      hp_value:
+        typeof hpValue === "number" && !Number.isNaN(hpValue)
+          ? hpValue
+          : null,
+      hp_percent:
+        typeof hpPercent === "number" && !Number.isNaN(hpPercent)
+          ? hpPercent
+          : null,
+      user_name: userName ?? null,
+    });
 
     if (error) {
       console.error("Supabase insert error", error);
@@ -58,49 +74,49 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    console.error("POST /api/raids error", e);
     return NextResponse.json({ error: "invalid request" }, { status: 400 });
   }
 }
 
 export async function GET(req: NextRequest) {
-  if (!supabaseServer) {
-    console.error("supabaseServer is not configured");
-    return NextResponse.json(
-      { error: "Supabase is not configured" },
-      { status: 500 }
-    );
+  try {
+    const { client, errorResponse } = getClientOrErrorResponse();
+    if (!client) return errorResponse;
+
+    const { searchParams } = new URL(req.url);
+    const groupId = searchParams.get("groupId");
+    const bossFilter = searchParams.get("bossName");
+    const limit = Number(searchParams.get("limit") ?? "50");
+
+    if (!groupId) {
+      return NextResponse.json(
+        { error: "groupId is required" },
+        { status: 400 }
+      );
+    }
+
+    let query = client
+      .from("raids")
+      .select("*")
+      .eq("group_id", groupId)
+      .order("created_at", { ascending: false })
+      .limit(Number.isNaN(limit) ? 50 : limit);
+
+    if (bossFilter) {
+      query = query.eq("battle_name", bossFilter);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error("Supabase select error", error);
+      return NextResponse.json({ error: "db error" }, { status: 500 });
+    }
+
+    return NextResponse.json(data ?? []);
+  } catch (e) {
+    console.error("GET /api/raids error", e);
+    return NextResponse.json({ error: "unexpected error" }, { status: 500 });
   }
-
-  const { searchParams } = new URL(req.url);
-  const groupId = searchParams.get("groupId");
-  const bossFilter = searchParams.get("bossName");
-  const limit = Number(searchParams.get("limit") ?? "50");
-
-  if (!groupId) {
-    return NextResponse.json(
-      { error: "groupId is required" },
-      { status: 400 }
-    );
-  }
-
-  let query = supabaseServer
-    .from("raids")
-    .select("*")
-    .eq("group_id", groupId)
-    .order("created_at", { ascending: false })
-    .limit(limit);
-
-  if (bossFilter) {
-    query = query.eq("battle_name", bossFilter);
-  }
-
-  const { data, error } = await query;
-
-  if (error) {
-    console.error(error);
-    return NextResponse.json({ error: "db error" }, { status: 500 });
-  }
-
-  return NextResponse.json(data ?? []);
 }
