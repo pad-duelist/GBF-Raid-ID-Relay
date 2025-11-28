@@ -17,7 +17,8 @@ type ClientAndError = {
   errorResponse: NextResponse | null;
 };
 
-// CORS ヘッダ（必要に応じて Origin を絞ることも可能です）
+// ===== CORS 設定 =====
+
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
@@ -35,6 +36,8 @@ function jsonWithCors(data: any, init?: ResponseInit) {
   return withCors(NextResponse.json(data, init));
 }
 
+// ===== Supabase クライアント取得 =====
+
 function getClientOrErrorResponse(): ClientAndError {
   const client = getSupabaseServer();
 
@@ -50,10 +53,14 @@ function getClientOrErrorResponse(): ClientAndError {
   return { client, errorResponse: null };
 }
 
-// Preflight 用
+// ===== OPTIONS（プリフライト用） =====
+
 export function OPTIONS() {
+  // Body なし 204 + CORS ヘッダ
   return withCors(new NextResponse(null, { status: 204 }));
 }
+
+// ===== POST: 参戦ID登録（重複IDは無視） =====
 
 export async function POST(req: NextRequest) {
   try {
@@ -79,7 +86,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { error } = await client.from("raids").insert({
+    const payload = {
       group_id: groupId,
       raid_id: raidId,
       boss_name: bossName ?? null,
@@ -93,9 +100,17 @@ export async function POST(req: NextRequest) {
           ? hpPercent
           : null,
       user_name: userName ?? null,
-    });
+    };
+
+    const { error } = await client.from("raids").insert(payload);
 
     if (error) {
+      // 23505 = unique 制約違反（(group_id, raid_id) が重複）
+      if ((error as any).code === "23505") {
+        console.log("Duplicate raid ignored", { groupId, raidId });
+        return jsonWithCors({ ok: true, deduped: true });
+      }
+
       console.error("Supabase insert error", error);
       return jsonWithCors({ error: "db error" }, { status: 500 });
     }
@@ -106,6 +121,8 @@ export async function POST(req: NextRequest) {
     return jsonWithCors({ error: "invalid request" }, { status: 400 });
   }
 }
+
+// ===== GET: 参戦ID一覧取得 =====
 
 export async function GET(req: NextRequest) {
   try {
