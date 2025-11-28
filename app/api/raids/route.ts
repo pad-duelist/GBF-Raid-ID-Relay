@@ -1,8 +1,17 @@
+// app/api/raids/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
 
 export async function POST(req: NextRequest) {
   try {
+    if (!supabaseServer) {
+      console.error("supabaseServer is not configured");
+      return NextResponse.json(
+        { error: "Supabase is not configured" },
+        { status: 500 }
+      );
+    }
+
     const body = await req.json();
 
     const {
@@ -30,15 +39,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { error } = await supabaseServer.from("raids").insert({
-      group_id: groupId,
-      raid_id: raidId,
-      boss_name: bossName ?? null,
-      battle_name: battleName ?? null,
-      hp_value: typeof hpValue === "number" ? hpValue : null,
-      hp_percent: typeof hpPercent === "number" ? hpPercent : null,
-      user_name: userName ?? null,
-    });
+    const { error } = await supabaseServer
+      .from("raids")
+      .insert({
+        group_id: groupId,
+        raid_id: raidId,
+        boss_name: bossName ?? null,
+        battle_name: battleName ?? null,
+        hp_value: typeof hpValue === "number" ? hpValue : null,
+        hp_percent: typeof hpPercent === "number" ? hpPercent : null,
+        user_name: userName ?? null,
+      });
 
     if (error) {
       console.error("Supabase insert error", error);
@@ -53,6 +64,14 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
+  if (!supabaseServer) {
+    console.error("supabaseServer is not configured");
+    return NextResponse.json(
+      { error: "Supabase is not configured" },
+      { status: 500 }
+    );
+  }
+
   const { searchParams } = new URL(req.url);
   const groupId = searchParams.get("groupId");
   const bossFilter = searchParams.get("bossName");
