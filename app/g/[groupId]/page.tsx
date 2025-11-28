@@ -26,7 +26,7 @@ export default function GroupPage() {
   const [bossFilter, setBossFilter] = useState<string>("");
   const [copyMessage, setCopyMessage] = useState<string | null>(null);
 
-  // ★ 追加：スプレッドシートの対応表
+  // ★ スプレッドシートの対応表
   const battleMap = useBattleNameMap();
 
   async function fetchRaids() {
@@ -35,10 +35,7 @@ export default function GroupPage() {
       groupId: String(groupId),
       limit: "50",
     });
-    if (bossFilter) {
-      query.set("bossName", bossFilter);
-    }
-
+    // ★ サーバー側では絞り込まない（常に全件）
     const res = await fetch(`/api/raids?${query.toString()}`, {
       cache: "no-store",
     });
@@ -52,11 +49,11 @@ export default function GroupPage() {
   useEffect(() => {
     setLoading(true);
     fetchRaids();
-    // ✅ ここを 3000 → 1000 に変更（1秒ごとに更新）
+    // ✅ 1秒ごとの自動更新
     const timer = setInterval(fetchRaids, 1000);
     return () => clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupId, bossFilter]);
+    // bossFilter には依存しない
+  }, [groupId]);
 
   async function copyId(id: string) {
     try {
@@ -68,7 +65,7 @@ export default function GroupPage() {
     }
   }
 
-  // ★ 絞り込み候補：表示名（対応表で変換された名前）を使う
+  // ★ 絞り込み候補：対応表で変換された表示名を使う
   const uniqueBosses = Array.from(
     new Set(
       raids
@@ -81,6 +78,17 @@ export default function GroupPage() {
     )
   );
 
+  // ★ 表示用だけフィルタする
+  const filteredRaids = bossFilter
+    ? raids.filter((raid) => {
+        const rawBoss = raid.boss_name ?? "";
+        const mapped = rawBoss ? battleMap[rawBoss] : undefined;
+        const label =
+          mapped || raid.battle_name || raid.boss_name || "不明なマルチ";
+        return label === bossFilter;
+      })
+    : raids;
+
   return (
     <div className="min-h-screen bg-slate-900 text-slate-50 p-4">
       <div className="max-w-3xl mx-auto space-y-4">
@@ -90,7 +98,6 @@ export default function GroupPage() {
               参戦ID共有ビューア - グループ: {groupId}
             </h1>
             <p className="text-sm text-slate-400">
-              {/* ✅ 表示文言も 3秒 → 1秒 に変更 */}
               1秒ごとに自動更新 / クリックでIDコピー
             </p>
           </div>
@@ -120,18 +127,20 @@ export default function GroupPage() {
 
         {loading ? (
           <div>読み込み中...</div>
-        ) : raids.length === 0 ? (
+        ) : filteredRaids.length === 0 ? (
           <div className="text-slate-400 text-sm">
             まだIDが流れていません。
           </div>
         ) : (
           <div className="space-y-2">
-            {raids.map((raid) => {
+            {filteredRaids.map((raid) => {
               const created = new Date(raid.created_at);
               const timeAgo = formatTimeAgo(created);
 
+              const rawBoss = raid.boss_name ?? "";
+              const mapped = rawBoss ? battleMap[rawBoss] : undefined;
               const labelName =
-                raid.battle_name || raid.boss_name || "不明なマルチ";
+                mapped || raid.battle_name || raid.boss_name || "不明なマルチ";
 
               let hpText = "HP 不明";
               if (raid.hp_value != null && raid.hp_percent != null) {
