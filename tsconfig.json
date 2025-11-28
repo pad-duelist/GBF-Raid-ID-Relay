@@ -24,7 +24,6 @@
     },
     "types": [
       "node",
-      "jest"
     ],
     "incremental": true,
     "plugins": [
