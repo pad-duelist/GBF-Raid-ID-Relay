@@ -12,25 +12,30 @@ type RaidRecord = {
   userName?: string;
 };
 
-function getClientOrErrorResponse() {
+type ClientAndError = {
+  client: ReturnType<typeof getSupabaseServer>; // SupabaseClient | null
+  errorResponse: NextResponse | null;
+};
+
+function getClientOrErrorResponse(): ClientAndError {
   const client = getSupabaseServer();
+
   if (!client) {
     console.error("Supabase client is not configured.");
-    return {
-      client: null as const,
-      errorResponse: NextResponse.json(
-        { error: "Supabase is not configured" },
-        { status: 500 }
-      ),
-    };
+    const errorResponse = NextResponse.json(
+      { error: "Supabase is not configured" },
+      { status: 500 }
+    );
+    return { client: null, errorResponse };
   }
-  return { client, errorResponse: null as const };
+
+  return { client, errorResponse: null };
 }
 
 export async function POST(req: NextRequest) {
   try {
     const { client, errorResponse } = getClientOrErrorResponse();
-    if (!client) return errorResponse;
+    if (!client) return errorResponse as NextResponse;
 
     const body = (await req.json()) as RaidRecord;
 
@@ -82,7 +87,7 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   try {
     const { client, errorResponse } = getClientOrErrorResponse();
-    if (!client) return errorResponse;
+    if (!client) return errorResponse as NextResponse;
 
     const { searchParams } = new URL(req.url);
     const groupId = searchParams.get("groupId");
