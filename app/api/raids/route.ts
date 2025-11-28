@@ -17,12 +17,30 @@ type ClientAndError = {
   errorResponse: NextResponse | null;
 };
 
+// CORS ヘッダ（必要に応じて Origin を絞ることも可能です）
+const CORS_HEADERS: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
+function withCors(res: NextResponse) {
+  for (const [k, v] of Object.entries(CORS_HEADERS)) {
+    res.headers.set(k, v);
+  }
+  return res;
+}
+
+function jsonWithCors(data: any, init?: ResponseInit) {
+  return withCors(NextResponse.json(data, init));
+}
+
 function getClientOrErrorResponse(): ClientAndError {
   const client = getSupabaseServer();
 
   if (!client) {
     console.error("Supabase client is not configured.");
-    const errorResponse = NextResponse.json(
+    const errorResponse = jsonWithCors(
       { error: "Supabase is not configured" },
       { status: 500 }
     );
@@ -30,6 +48,11 @@ function getClientOrErrorResponse(): ClientAndError {
   }
 
   return { client, errorResponse: null };
+}
+
+// Preflight 用
+export function OPTIONS() {
+  return withCors(new NextResponse(null, { status: 204 }));
 }
 
 export async function POST(req: NextRequest) {
@@ -50,7 +73,7 @@ export async function POST(req: NextRequest) {
     } = body;
 
     if (!groupId || !raidId) {
-      return NextResponse.json(
+      return jsonWithCors(
         { error: "groupId and raidId are required" },
         { status: 400 }
       );
@@ -74,13 +97,13 @@ export async function POST(req: NextRequest) {
 
     if (error) {
       console.error("Supabase insert error", error);
-      return NextResponse.json({ error: "db error" }, { status: 500 });
+      return jsonWithCors({ error: "db error" }, { status: 500 });
     }
 
-    return NextResponse.json({ ok: true });
+    return jsonWithCors({ ok: true });
   } catch (e) {
     console.error("POST /api/raids error", e);
-    return NextResponse.json({ error: "invalid request" }, { status: 400 });
+    return jsonWithCors({ error: "invalid request" }, { status: 400 });
   }
 }
 
@@ -95,7 +118,7 @@ export async function GET(req: NextRequest) {
     const limit = Number(searchParams.get("limit") ?? "50");
 
     if (!groupId) {
-      return NextResponse.json(
+      return jsonWithCors(
         { error: "groupId is required" },
         { status: 400 }
       );
@@ -116,12 +139,15 @@ export async function GET(req: NextRequest) {
 
     if (error) {
       console.error("Supabase select error", error);
-      return NextResponse.json({ error: "db error" }, { status: 500 });
+      return jsonWithCors({ error: "db error" }, { status: 500 });
     }
 
-    return NextResponse.json(data ?? []);
+    return jsonWithCors(data ?? []);
   } catch (e) {
     console.error("GET /api/raids error", e);
-    return NextResponse.json({ error: "unexpected error" }, { status: 500 });
+    return jsonWithCors(
+      { error: "unexpected error" },
+      { status: 500 }
+    );
   }
 }
