@@ -2,7 +2,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { createClient } from "@/lib/supabaseClient";
+import { supabaseBrowserClient } from "@/lib/supabaseClient";
 
 type TokenState = {
   loading: boolean;
@@ -11,7 +11,7 @@ type TokenState = {
 };
 
 export default function ExtensionTokenPage() {
-  const supabase = createClient();
+  const supabase = supabaseBrowserClient;
   const [userId, setUserId] = useState<string | null>(null);
   const [state, setState] = useState<TokenState>({
     loading: true,
