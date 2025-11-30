@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { supabaseBrowserClient } from "@/lib/supabaseClient";
 
 type TokenState = {
@@ -12,6 +13,7 @@ type TokenState = {
 
 export default function ExtensionTokenPage() {
   const supabase = supabaseBrowserClient;
+  const router = useRouter();
   const [userId, setUserId] = useState<string | null>(null);
   const [state, setState] = useState<TokenState>({
     loading: true,
@@ -19,7 +21,7 @@ export default function ExtensionTokenPage() {
     token: null,
   });
 
-  // ログインユーザー取得
+  // ログインユーザー取得（localStorage に記憶されているセッションもここで復元）
   useEffect(() => {
     const fetchUser = async () => {
       const {
@@ -133,9 +135,24 @@ export default function ExtensionTokenPage() {
     }
   };
 
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    // セッションを消してからログインページへ
+    router.replace("/login");
+  };
+
   return (
     <div className="mx-auto max-w-xl px-4 py-8">
-      <h1 className="mb-4 text-2xl font-bold text-white">拡張機能用トークン</h1>
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-white">拡張機能用トークン</h1>
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="rounded border border-gray-500 px-3 py-1 text-xs text-gray-200 hover:bg-gray-700"
+        >
+          ログアウト
+        </button>
+      </div>
 
       <p className="mb-4 text-sm text-gray-300">
         このトークンを

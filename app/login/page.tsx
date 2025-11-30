@@ -1,16 +1,33 @@
 // app/login/page.tsx
 "use client";
 
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { supabaseBrowserClient } from "@/lib/supabaseClient";
 
 export default function LoginPage() {
   const supabase = supabaseBrowserClient;
+  const router = useRouter();
+
+  // すでにログイン済みなら /extension-token へ飛ばす
+  useEffect(() => {
+    const checkUser = async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (user) {
+        router.replace("/extension-token");
+      }
+    };
+    checkUser();
+  }, [supabase, router]);
 
   const handleDiscordLogin = async () => {
     await supabase.auth.signInWithOAuth({
       provider: "discord",
       options: {
-        // ログイン後に戻したいURL（拡張トークンページに戻す）
+        // 現在のドメインに合わせて extension-token へ戻す
         redirectTo: `${window.location.origin}/extension-token`,
       },
     });
