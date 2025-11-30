@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useParams } from "next/navigation";
 import { formatTimeAgo } from "@/lib/timeAgo";
 import { formatNumberWithComma } from "@/lib/numberFormat";
@@ -25,6 +25,10 @@ export default function GroupPage() {
   const [loading, setLoading] = useState(true);
   const [bossFilter, setBossFilter] = useState<string>("");
   const [copyMessage, setCopyMessage] = useState<string | null>(null);
+
+  // 🔔 新着ID用: 最後に通知したレコードID
+  const [lastNotifiedId, setLastNotifiedId] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   // ★ スプレッドシートの対応表
   const battleMap = useBattleNameMap();
@@ -65,6 +69,35 @@ export default function GroupPage() {
     }
   }
 
+  // 🔔 効果音の読み込み（初回のみ）
+  useEffect(() => {
+    audioRef.current = new Audio("/notify.wav");
+  }, []);
+
+  // 🔔 新しいIDが流れたときに音を鳴らす
+  //   raids は /api/raids 側で「新しい順」に並んでいる想定
+  useEffect(() => {
+    if (!raids || raids.length === 0) return;
+
+    const latestRaidId = raids[0].id; // 一番新しいレコード
+
+    // 初回ロード時は基準だけセットして音は鳴らさない
+    if (lastNotifiedId === null) {
+      setLastNotifiedId(latestRaidId);
+      return;
+    }
+
+    // 前回と違うレコードIDなら「新しいIDが流れた」とみなす
+    if (latestRaidId !== lastNotifiedId) {
+      audioRef.current
+        ?.play()
+        .catch(() => {
+          // 自動再生制限に引っかかった場合は握りつぶす
+        });
+      setLastNotifiedId(latestRaidId);
+    }
+  }, [raids, lastNotifiedId]);
+
   // ★ 絞り込み候補：対応表で変換された表示名を使う
   const uniqueBosses = Array.from(
     new Set(
@@ -103,21 +136,36 @@ export default function GroupPage() {
           </div>
 
           <div className="flex items-center gap-2">
-            <label className="text-xs sm:text-sm text-slate-300">
-              マルチ絞り込み
-            </label>
-            <select
-              className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs sm:text-sm"
-              value={bossFilter}
-              onChange={(e) => setBossFilter(e.target.value)}
+            <div className="flex flex-col gap-1">
+              <label className="text-xs sm:text-sm text-slate-300">
+                マルチ絞り込み
+              </label>
+              <select
+                className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs sm:text-sm"
+                value={bossFilter}
+                onChange={(e) => setBossFilter(e.target.value)}
+              >
+                <option value="">すべて</option>
+                {uniqueBosses.map((boss) => (
+                  <option key={boss} value={boss}>
+                    {boss}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* 🔔 自動再生制限対策用のサウンドテストボタン（任意） */}
+            <button
+              type="button"
+              onClick={() =>
+                audioRef.current?.play().catch(() => {
+                  /* 無視 */
+                })
+              }
+              className="ml-2 bg-slate-700 hover:bg-slate-600 text-xs px-2 py-1 rounded"
             >
-              <option value="">すべて</option>
-              {uniqueBosses.map((boss) => (
-                <option key={boss} value={boss}>
-                  {boss}
-                </option>
-              ))}
-            </select>
+              音テスト
+            </button>
           </div>
         </header>
 
