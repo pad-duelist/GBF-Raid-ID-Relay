@@ -135,9 +135,9 @@ export default function ExtensionTokenPage() {
 
   return (
     <div className="mx-auto max-w-xl px-4 py-8">
-      <h1 className="mb-4 text-2xl font-bold">拡張機能用トークン</h1>
+      <h1 className="mb-4 text-2xl font-bold text-white">拡張機能用トークン</h1>
 
-      <p className="mb-4 text-sm text-gray-700">
+      <p className="mb-4 text-sm text-gray-300">
         このトークンを
         <strong>Chrome拡張のオプション画面</strong>
         に貼り付けることで、拡張機能から送信されたIDと、あなたのアカウントが紐づきます。
@@ -145,22 +145,30 @@ export default function ExtensionTokenPage() {
         トークンは<strong>他人に見せない</strong>ようにしてください。
       </p>
 
-      {state.loading && <p>読み込み中です…</p>}
+      {state.loading && <p className="text-sm text-gray-300">読み込み中です…</p>}
 
       {!state.loading && state.error && (
-        <p className="text-sm text-red-600">{state.error}</p>
+        <p className="text-sm text-red-400">
+          {state.error}{" "}
+          <a
+            href="/login"
+            className="underline text-blue-300 hover:text-blue-200"
+          >
+            ログインページへ
+          </a>
+        </p>
       )}
 
       {!state.loading && !state.error && (
         <div className="space-y-4">
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
+            <label className="mb-1 block text-sm font-medium text-gray-200">
               現在のトークン
             </label>
             <div className="flex items-center gap-2">
               <input
                 type="text"
-                className="flex-1 rounded border border-gray-300 bg-gray-50 px-2 py-1 text-xs"
+                className="flex-1 rounded border border-gray-600 bg-gray-900 px-2 py-1 text-xs text-gray-100"
                 readOnly
                 value={state.token ?? ""}
               />
@@ -173,7 +181,7 @@ export default function ExtensionTokenPage() {
                 コピー
               </button>
             </div>
-            <p className="mt-1 text-xs text-gray-500">
+            <p className="mt-1 text-xs text-gray-400">
               拡張機能のオプション画面にある「拡張機能用トークン」に、この値を貼り付けてください。
             </p>
           </div>
@@ -182,12 +190,12 @@ export default function ExtensionTokenPage() {
             <button
               type="button"
               onClick={handleRotate}
-              className="rounded bg-red-600 px-4 py-2 text-sm font-semibold text白 hover:bg-red-700 disabled:opacity-50"
+              className="rounded bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
               disabled={state.loading}
             >
               トークンを再発行する
             </button>
-            <p className="mt-1 text-xs text-gray-500">
+            <p className="mt-1 text-xs text-gray-400">
               再発行すると、古いトークンを設定している拡張機能は送信できなくなります。
             </p>
           </div>
