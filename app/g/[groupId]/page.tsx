@@ -240,7 +240,7 @@ export default function GroupPage() {
                       <img
                         src={imageUrl}
                         alt={labelName}
-                        style={{ width: 180, height: 126 }} // 180x126 の比率で表示
+                        style={{ width: 90, height: 63 }} // 180x126 の比率で表示
                         className="rounded"
                       />
                     )}
