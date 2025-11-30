@@ -1,9 +1,130 @@
+// app/api/raids/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: { persistSession: false },
+});
+
+// ===== ボス名ブロックリスト =====
+const BOSS_BLOCKLIST_CSV_URL =
+  process.env.BOSS_BLOCKLIST_CSV_URL ??
+  process.env.NEXT_PUBLIC_BOSS_BLOCKLIST_CSV_URL;
+
+let bossBlockList: Set<string> | null = null;
+let lastBossBlockListFetched = 0;
+const BOSS_BLOCKLIST_TTL = 5 * 60 * 1000; // 5分
+
+function normalizeBossName(name: string): string {
+  return name.trim();
+}
+
+async function loadBossBlockList(): Promise<Set<string>> {
+  const now = Date.now();
+
+  if (bossBlockList && now - lastBossBlockListFetched < BOSS_BLOCKLIST_TTL) {
+    return bossBlockList;
+  }
+
+  const set = new Set<string>();
+
+  if (!BOSS_BLOCKLIST_CSV_URL) {
+    console.warn("[boss blocklist] BOSS_BLOCKLIST_CSV_URL が設定されていません");
+    bossBlockList = set;
+    lastBossBlockListFetched = now;
+    return set;
+  }
+
+  try {
+    const res = await fetch(BOSS_BLOCKLIST_CSV_URL);
+    if (res.ok) {
+      const text = await res.text();
+      const lines = text.split(/\r?\n/);
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        const bossName = line.split(",")[0];
+        if (bossName) set.add(normalizeBossName(bossName));
+      }
+    } else {
+      console.error(
+        "[boss blocklist] fetch failed:",
+        res.status,
+        res.statusText
+      );
+    }
+  } catch (e) {
+    console.error("[boss blocklist] 取得に失敗しました", e);
+  }
+
+  bossBlockList = set;
+  lastBossBlockListFetched = now;
+  return set;
+}
+
+async function isBlockedBoss(
+  bossName: string | null | undefined
+): Promise<boolean> {
+  if (!bossName) return false;
+  const list = await loadBossBlockList();
+  const normalized = normalizeBossName(bossName);
+  return list.has(normalized);
+}
+
+// ===== グループ承認 / ユーザー識別系 =====
+
+function getUserIdFromRequest(req: NextRequest): string | null {
+  const headerUserId =
+    req.headers.get("x-user-id") ?? req.headers.get("X-User-Id");
+  if (headerUserId && headerUserId.trim().length > 0) {
+    return headerUserId.trim();
+  }
+  return null;
+}
+
+async function getUserIdFromExtensionToken(
+  extensionToken: string
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("user_id")
+    .eq("extension_token", extensionToken)
+    .maybeSingle();
+
+  if (error && (error as any).code !== "PGRST116") {
+    console.error("[profiles] select error", error);
+  }
+
+  return data?.user_id ?? null;
+}
+
+async function isUserMemberOfGroup(
+  groupId: string,
+  userId: string
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("group_memberships")
+    .select("id, status")
+    .eq("group_id", groupId)
+    .eq("user_id", userId)
+    .in("status", ["member", "owner"])
+    .maybeSingle();
+
+  if (error && (error as any).code !== "PGRST116") {
+    console.error("[group_memberships] select error", error);
+  }
+
+  return !!data;
+}
+
 // -------- GET /api/raids --------
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
 
-  const groupIdSingle = searchParams.get("groupId");          // 旧仕様
-  const groupIdsParam = searchParams.get("groupIds");         // 新仕様（カンマ区切り）
+  const groupIdSingle = searchParams.get("groupId"); // 旧仕様
+  const groupIdsParam = searchParams.get("groupIds"); // 新仕様（カンマ区切り）
   const bossName = searchParams.get("bossName");
   const limitParam = searchParams.get("limit") ?? "50";
   const limit = Number(limitParam);
@@ -72,7 +193,7 @@ export async function GET(req: NextRequest) {
         "member_max",
       ].join(",")
     )
-    .in("group_id", allowedGroupIds)    // 複数グループ
+    .in("group_id", allowedGroupIds) // 複数グループ
     .neq("sender_user_id", viewerUserId)
     .order("created_at", { ascending: false })
     .limit(isNaN(limit) ? 50 : limit);
@@ -89,3 +210,16 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json(data ?? []);
 }
+
+// -------- POST /api/raids --------
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+
+    const {
+      groupId,
+      raidId,
+      bossName,
+      battleName,
+      hpValue,
+      hpPercent,
