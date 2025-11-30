@@ -8,7 +8,7 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: { persistSession: false },
 });
 
-// ===== ボス名ブロックリスト・環境変数 デバッグ =====
+// ===== ボス名ブロックリスト =====
 const BOSS_BLOCKLIST_CSV_URL =
   process.env.BOSS_BLOCKLIST_CSV_URL ??
   process.env.NEXT_PUBLIC_BOSS_BLOCKLIST_CSV_URL;
@@ -44,7 +44,11 @@ async function loadBossBlockList(): Promise<Set<string>> {
     console.log("[boss blocklist] fetching from", BOSS_BLOCKLIST_CSV_URL);
     const res = await fetch(BOSS_BLOCKLIST_CSV_URL);
     if (!res.ok) {
-      console.error("[boss blocklist] fetch failed:", res.status, res.statusText);
+      console.error(
+        "[boss blocklist] fetch failed:",
+        res.status,
+        res.statusText
+      );
     } else {
       const text = await res.text();
 
@@ -70,13 +74,66 @@ async function loadBossBlockList(): Promise<Set<string>> {
   return set;
 }
 
-async function isBlockedBoss(bossName: string | null | undefined): Promise<boolean> {
+async function isBlockedBoss(
+  bossName: string | null | undefined
+): Promise<boolean> {
   if (!bossName) return false;
   const list = await loadBossBlockList();
   const normalized = normalizeBossName(bossName);
   const blocked = list.has(normalized);
   console.log("[boss blocklist] check", { bossName, normalized, blocked });
   return blocked;
+}
+
+// ===== グループ承認 / ユーザー識別系 =====
+
+// ビューア側（サイト）から送られてくるユーザーID
+// フロント側で Supabase の user.id を取得して
+// fetch のヘッダーに X-User-Id として付けてもらう想定です。
+function getUserIdFromRequest(req: NextRequest): string | null {
+  const headerUserId =
+    req.headers.get("x-user-id") ?? req.headers.get("X-User-Id");
+  if (headerUserId && headerUserId.trim().length > 0) {
+    return headerUserId.trim();
+  }
+  return null;
+}
+
+// 拡張機能用トークンから Supabase の user_id を取得
+async function getUserIdFromExtensionToken(
+  extensionToken: string
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("user_id")
+    .eq("extension_token", extensionToken)
+    .maybeSingle();
+
+  if (error && (error as any).code !== "PGRST116") {
+    console.error("[profiles] select error", error);
+  }
+
+  return data?.user_id ?? null;
+}
+
+// 指定ユーザーが指定グループの承認済みメンバーかどうか
+async function isUserMemberOfGroup(
+  groupId: string,
+  userId: string
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("group_memberships")
+    .select("id, status")
+    .eq("group_id", groupId)
+    .eq("user_id", userId)
+    .in("status", ["member", "owner"])
+    .maybeSingle();
+
+  if (error && (error as any).code !== "PGRST116") {
+    console.error("[group_memberships] select error", error);
+  }
+
+  return !!data;
 }
 
 // -------- GET /api/raids --------
@@ -93,6 +150,25 @@ export async function GET(req: NextRequest) {
       { error: "groupId is required" },
       { status: 400 }
     );
+  }
+
+  // ログインユーザー（Discord / Supabase）のID
+  const viewerUserId =
+    getUserIdFromRequest(req) ?? searchParams.get("userId") ?? undefined;
+
+  if (!viewerUserId) {
+    console.warn("[GET /api/raids] userId missing");
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // 承認済みメンバーかチェック
+  const isMember = await isUserMemberOfGroup(groupId, viewerUserId);
+  if (!isMember) {
+    console.warn("[GET /api/raids] forbidden (not member)", {
+      groupId,
+      viewerUserId,
+    });
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   let query = supabase
@@ -113,6 +189,8 @@ export async function GET(req: NextRequest) {
       ].join(",")
     )
     .eq("group_id", groupId)
+    // 自分が送信したIDは除外
+    .neq("sender_user_id", viewerUserId)
     .order("created_at", { ascending: false })
     .limit(isNaN(limit) ? 50 : limit);
 
@@ -145,7 +223,16 @@ export async function POST(req: NextRequest) {
       userName,
       memberCurrent,
       memberMax,
-    } = body;
+      extensionToken,
+      extension_token,
+    } = body ?? {};
+
+    // ヘッダー優先で拡張機能トークンを取得
+    const tokenFromHeader =
+      req.headers.get("x-extension-token") ??
+      req.headers.get("X-Extension-Token");
+    const effectiveExtensionToken =
+      tokenFromHeader ?? extensionToken ?? extension_token ?? null;
 
     // ★ボスブロック（デバッグ付き）
     if (await isBlockedBoss(bossName)) {
@@ -167,7 +254,40 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 重複チェック
+    if (!effectiveExtensionToken) {
+      console.warn("[POST /api/raids] extension token missing");
+      return NextResponse.json(
+        { error: "extension token is required" },
+        { status: 401 }
+      );
+    }
+
+    // 拡張機能トークンから送信者ユーザーIDを特定
+    const senderUserId = await getUserIdFromExtensionToken(
+      effectiveExtensionToken
+    );
+
+    if (!senderUserId) {
+      console.warn("[POST /api/raids] invalid extension token", {
+        effectiveExtensionToken,
+      });
+      return NextResponse.json(
+        { error: "invalid extension token" },
+        { status: 401 }
+      );
+    }
+
+    // 送信者がこのグループの承認済みメンバーかチェック
+    const isMember = await isUserMemberOfGroup(groupId, senderUserId);
+    if (!isMember) {
+      console.warn("[POST /api/raids] forbidden (not member)", {
+        groupId,
+        senderUserId,
+      });
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    // 同じ groupId + raidId が既に存在するかチェック（重複IDを弾く）
     const { data: existing, error: selectError } = await supabase
       .from("raids")
       .select("id")
@@ -176,7 +296,7 @@ export async function POST(req: NextRequest) {
       .limit(1)
       .maybeSingle();
 
-    if (selectError && selectError.code !== "PGRST116") {
+    if (selectError && (selectError as any).code !== "PGRST116") {
       console.error("select error", selectError);
     }
 
@@ -197,14 +317,19 @@ export async function POST(req: NextRequest) {
         hpValue !== undefined && hpValue !== null ? Number(hpValue) : null,
       hp_percent:
         hpPercent !== undefined && hpPercent !== null
-          ? Number(hpPercent) : null,
+          ? Number(hpPercent)
+          : null,
       user_name: userName ?? null,
       member_current:
         memberCurrent !== undefined && memberCurrent !== null
-          ? Number(memberCurrent) : null,
+          ? Number(memberCurrent)
+          : null,
       member_max:
         memberMax !== undefined && memberMax !== null
-          ? Number(memberMax) : null,
+          ? Number(memberMax)
+          : null,
+      // ★ここで送信者の Supabase ユーザーIDを紐づけ
+      sender_user_id: senderUserId,
     });
 
     if (insertError) {
@@ -219,6 +344,7 @@ export async function POST(req: NextRequest) {
       groupId,
       raidId,
       bossName,
+      senderUserId,
     });
 
     return NextResponse.json({ ok: true }, { status: 200 });
