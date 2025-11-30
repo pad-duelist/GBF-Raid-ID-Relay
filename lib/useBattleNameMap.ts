@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from "react";
 
-export type BattleImageMap = Record<string, string>; // boss_name → image URL
+export type BattleNameMap = Record<string, string>; // boss_name → image URL
 
-export function useBattleNameMap(): BattleImageMap {
-  const [map, setMap] = useState<BattleImageMap>({});
+export function useBattleNameMap(): BattleNameMap {
+  const [map, setMap] = useState<BattleNameMap>({});
 
   useEffect(() => {
     const url = process.env.NEXT_PUBLIC_BATTLE_MAPPING_CSV_URL;
@@ -16,9 +16,9 @@ export function useBattleNameMap(): BattleImageMap {
 
     let cancelled = false;
 
-    const load = async () => {
+    (async () => {
       try {
-        const res = await fetch(url);
+        const res = await fetch(url, { cache: "no-store" });
         if (!res.ok) {
           throw new Error(
             `battle mapping CSV の取得に失敗しました: ${res.status}`
@@ -26,45 +26,44 @@ export function useBattleNameMap(): BattleImageMap {
         }
 
         const text = await res.text();
-        const lines = text.trim().split(/\r?\n/);
+        const lines = text
+          .replace(/\r\n/g, "\n")
+          .split("\n")
+          .filter((l) => l.trim().length > 0);
+
         if (lines.length === 0) return;
 
         const [headerLine, ...rows] = lines;
         const headers = headerLine.split(",");
 
-        const bossNameIndex = headers.indexOf("boss_name");
-        const imageIndex = headers.indexOf("image");
+        const bossIdx = headers.indexOf("boss_name");
+        const imageIdx = headers.indexOf("image");
 
-        if (bossNameIndex === -1) {
-          console.error("CSV に boss_name 列がありません");
+        if (bossIdx === -1 || imageIdx === -1) {
+          console.error("CSV に boss_name または image 列がありません");
           return;
         }
 
-        const nextMap: BattleImageMap = {};
+        const nextMap: BattleNameMap = {};
 
         for (const row of rows) {
-          if (!row.trim()) continue;
           const cols = row.split(",");
+          const boss = cols[bossIdx]?.trim();
+          const image = cols[imageIdx]?.trim();
 
-          const bossName = cols[bossNameIndex]?.trim();
-          if (!bossName) continue;
+          if (!boss || !image) continue;
 
-          const imageUrl =
-            imageIndex >= 0 ? cols[imageIndex]?.trim() : undefined;
-          if (imageUrl) {
-            nextMap[bossName] = imageUrl;
-          }
+          nextMap[boss] = image;
         }
 
         if (!cancelled) {
+          console.log("battle name map loaded", nextMap);
           setMap(nextMap);
         }
       } catch (e) {
-        console.error(e);
+        console.error("useBattleNameMap error", e);
       }
-    };
-
-    load();
+    })();
 
     return () => {
       cancelled = true;

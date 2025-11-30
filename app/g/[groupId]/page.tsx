@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
-import { useParams } from "next/navigation";
+import { useEffect, useState, useRef, FormEvent } from "react";
+import { useParams, useRouter } from "next/navigation";
 import { formatTimeAgo } from "@/lib/timeAgo";
 import { formatNumberWithComma } from "@/lib/numberFormat";
 import { useBattleNameMap } from "@/lib/useBattleNameMap";
@@ -11,52 +11,83 @@ type RaidRow = {
   group_id: string;
   raid_id: string;
   boss_name: string | null;
-  battle_name: string | null;
+  battle_name: string | null; // 画像URLが入っている場合あり
   hp_value: number | null;
   hp_percent: number | null;
   user_name: string | null;
   created_at: string;
 };
 
+const looksLikeUrl = (s: string | null | undefined): boolean =>
+  !!s && /^https?:\/\//.test(s);
+
 export default function GroupPage() {
-  const params = useParams<{ groupId: string }>();
-  const groupId = params.groupId;
+  const params = useParams() as { groupId?: string };
+  const router = useRouter();
+
+  const initialGroupId = params.groupId ?? "";
+  const [groupId, setGroupId] = useState(initialGroupId);
+  const [groupInput, setGroupInput] = useState(initialGroupId);
+
   const [raids, setRaids] = useState<RaidRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [bossFilter, setBossFilter] = useState<string>("");
   const [copyMessage, setCopyMessage] = useState<string | null>(null);
 
-  // 🔔 新着ID用: 最後に通知したレコードID
+  // 🔔 新着ID用
   const [lastNotifiedId, setLastNotifiedId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // ★ スプレッドシートの対応表
+  // boss_name → image URL（スプレッドシート）
   const battleMap = useBattleNameMap();
 
-  async function fetchRaids() {
-    if (!groupId) return;
-    const query = new URLSearchParams({
-      groupId: String(groupId),
-      limit: "50",
-    });
-    // ★ サーバー側では絞り込まない（常に全件）
-    const res = await fetch(`/api/raids?${query.toString()}`, {
-      cache: "no-store",
-    });
-    if (!res.ok) return;
+  // グループ名入力フォームの submit
+  const handleGroupSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    const value = groupInput.trim();
+    if (!value) return;
+    router.push(`/groups/${encodeURIComponent(value)}`);
+    setGroupId(value);
+  };
 
-    const data: RaidRow[] = await res.json();
-    setRaids(data);
-    setLoading(false);
-  }
+  const fetchRaids = async () => {
+    if (!groupId) {
+      setRaids([]);
+      setLoading(false);
+      return;
+    }
+
+    try {
+      const query = new URLSearchParams({
+        groupId,
+        limit: "50",
+      });
+
+      const res = await fetch(`/api/raids?${query.toString()}`, {
+        cache: "no-store",
+      });
+
+      if (!res.ok) {
+        console.error("failed to fetch raids", res.status);
+        setRaids([]);
+        return;
+      }
+
+      const data: RaidRow[] = await res.json();
+      setRaids(data);
+    } catch (e) {
+      console.error("fetchRaids error", e);
+      setRaids([]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     setLoading(true);
     fetchRaids();
-    // ✅ 1秒ごとの自動更新
     const timer = setInterval(fetchRaids, 1000);
     return () => clearInterval(timer);
-    // bossFilter には依存しない
   }, [groupId]);
 
   async function copyId(id: string) {
@@ -69,73 +100,112 @@ export default function GroupPage() {
     }
   }
 
-  // 🔔 効果音の読み込み（初回のみ）
+  // 効果音読み込み
   useEffect(() => {
     audioRef.current = new Audio("/notify.wav");
   }, []);
 
-  // 🔔 新しいIDが流れたときに音を鳴らす
-  //   raids は /api/raids 側で「新しい順」に並んでいる想定
+  // 新着IDで音を鳴らす
   useEffect(() => {
     if (!raids || raids.length === 0) return;
 
-    const latestRaidId = raids[0].id; // 一番新しいレコード
+    const latestRaidId = raids[0].id;
 
-    // 初回ロード時は基準だけセットして音は鳴らさない
     if (lastNotifiedId === null) {
       setLastNotifiedId(latestRaidId);
       return;
     }
 
-    // 前回と違うレコードIDなら「新しいIDが流れた」とみなす
     if (latestRaidId !== lastNotifiedId) {
       audioRef.current
         ?.play()
         .catch(() => {
-          // 自動再生制限に引っかかった場合は握りつぶす
+          // 自動再生制限に引っかかった場合は無視
         });
       setLastNotifiedId(latestRaidId);
     }
   }, [raids, lastNotifiedId]);
 
-  // ★ 絞り込み候補：対応表で変換された表示名を使う
+  // 表示用のボス名（URL は除外）
+  const getDisplayName = (raid: RaidRow): string => {
+    const boss = raid.boss_name?.trim() || "";
+    const battle = raid.battle_name?.trim() || "";
+
+    if (boss && !looksLikeUrl(boss)) return boss;
+    if (battle && !looksLikeUrl(battle)) return battle;
+    return "不明なマルチ";
+  };
+
+  // 画像URLの決定
+  const getImageUrl = (raid: RaidRow): string | undefined => {
+    // 1. battle_name が URL ならそれを優先（新仕様）
+    if (looksLikeUrl(raid.battle_name)) {
+      return raid.battle_name as string;
+    }
+
+    // 2. boss_name が URL ならそれを使う（保険）
+    if (looksLikeUrl(raid.boss_name)) {
+      return raid.boss_name as string;
+    }
+
+    // 3. どちらも URL でなければ、表示名からスプレッドシートのマップを引く
+    const name = getDisplayName(raid);
+    return battleMap[name];
+  };
+
+  // 絞り込み候補は「表示名」で作る
   const uniqueBosses = Array.from(
     new Set(
       raids
-        .map((r) => {
-          const rawBoss = r.boss_name ?? "";
-          const mapped = rawBoss ? battleMap[rawBoss] : undefined;
-          return mapped || r.battle_name || r.boss_name;
-        })
-        .filter((v): v is string => Boolean(v))
+        .map((r) => getDisplayName(r))
+        .filter((v) => v && v !== "不明なマルチ")
     )
   );
 
-  // ★ 表示用だけフィルタする
   const filteredRaids = bossFilter
-    ? raids.filter((raid) => {
-        const rawBoss = raid.boss_name ?? "";
-        const mapped = rawBoss ? battleMap[rawBoss] : undefined;
-        const label =
-          mapped || raid.battle_name || raid.boss_name || "不明なマルチ";
-        return label === bossFilter;
-      })
+    ? raids.filter((r) => getDisplayName(r) === bossFilter)
     : raids;
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-50 p-4">
       <div className="max-w-3xl mx-auto space-y-4">
-        <header className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <header className="flex flex-col gap-4">
+          {/* 上段：タイトル */}
           <div>
             <h1 className="text-xl font-bold">
-              参戦ID共有ビューア - グループ: {groupId}
+              参戦ID共有ビューア - グループ:{" "}
+              {groupId || <span className="text-slate-500">未選択</span>}
             </h1>
             <p className="text-sm text-slate-400">
               1秒ごとに自動更新 / クリックでIDコピー
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          {/* 中段：グループ名入力フォーム */}
+          <form
+            onSubmit={handleGroupSubmit}
+            className="flex flex-col sm:flex-row gap-2 sm:items-center"
+          >
+            <label className="text-xs sm:text-sm text-slate-300">
+              グループ名
+            </label>
+            <input
+              type="text"
+              value={groupInput}
+              onChange={(e) => setGroupInput(e.target.value)}
+              placeholder="例: test"
+              className="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs sm:text-sm"
+            />
+            <button
+              type="submit"
+              className="bg-emerald-500 hover:bg-emerald-400 text-slate-900 font-semibold rounded px-3 py-1 text-xs sm:text-sm"
+            >
+              開く
+            </button>
+          </form>
+
+          {/* 下段：絞り込み＋音テスト */}
+          <div className="flex items-center gap-4 justify-between">
             <div className="flex flex-col gap-1">
               <label className="text-xs sm:text-sm text-slate-300">
                 マルチ絞り込み
@@ -154,7 +224,6 @@ export default function GroupPage() {
               </select>
             </div>
 
-            {/* 🔔 自動再生制限対策用のサウンドテストボタン（任意） */}
             <button
               type="button"
               onClick={() =>
@@ -162,7 +231,7 @@ export default function GroupPage() {
                   /* 無視 */
                 })
               }
-              className="ml-2 bg-slate-700 hover:bg-slate-600 text-xs px-2 py-1 rounded"
+              className="bg-slate-700 hover:bg-slate-600 text-xs px-2 py-1 rounded"
             >
               音テスト
             </button>
@@ -185,10 +254,8 @@ export default function GroupPage() {
               const created = new Date(raid.created_at);
               const timeAgo = formatTimeAgo(created);
 
-              const rawBoss = raid.boss_name ?? "";
-              const mapped = rawBoss ? battleMap[rawBoss] : undefined;
-              const labelName =
-                mapped || raid.battle_name || raid.boss_name || "不明なマルチ";
+              const labelName = getDisplayName(raid);
+              const imageUrl = getImageUrl(raid);
 
               let hpText = "HP 不明";
               if (raid.hp_value != null && raid.hp_percent != null) {
@@ -203,16 +270,31 @@ export default function GroupPage() {
                   onClick={() => copyId(raid.raid_id)}
                   className="flex items-center justify-between bg-slate-800/80 rounded-lg px-3 py-2 text-sm shadow cursor-pointer hover:bg-slate-700/80 transition-colors"
                 >
-                  <div className="flex flex-col">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-base underline decoration-dotted">
-                        {raid.raid_id}
-                      </span>
-                      <span className="text-xs text-slate-400">{timeAgo}</span>
+                  {/* 左側：画像＋ID＋ボス名 */}
+                  <div className="flex items-center gap-3">
+                    {imageUrl && (
+                      <img
+                        src={imageUrl}
+                        alt={labelName}
+                        className="w-12 h-12 rounded"
+                      />
+                    )}
+                    <div className="flex flex-col">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-base underline decoration-dotted">
+                          {raid.raid_id}
+                        </span>
+                        <span className="text-xs text-slate-400">
+                          {timeAgo}
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-300">
+                        {labelName}
+                      </div>
                     </div>
-                    <div className="text-xs text-slate-300">{labelName}</div>
                   </div>
 
+                  {/* 右側：投稿者＋HP */}
                   <div className="flex flex-col items-end gap-1">
                     <div className="text-xs text-slate-300">
                       {raid.user_name ?? "匿名"}
