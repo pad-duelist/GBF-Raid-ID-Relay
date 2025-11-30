@@ -1,95 +1,70 @@
-// lib/useBattleNameMap.ts
 "use client";
 
 import { useEffect, useState } from "react";
 
-export type BattleNameMap = Record<string, string>;
+export type BattleImageMap = Record<string, string>; // boss_name → image URL
 
-/**
- * Googleスプレッドシートの CSV から
- * boss_name -> battle_name の対応表を読み込むカスタムフック
- */
-export function useBattleNameMap(): BattleNameMap {
-  const [map, setMap] = useState<BattleNameMap>({});
+export function useBattleNameMap(): BattleImageMap {
+  const [map, setMap] = useState<BattleImageMap>({});
 
   useEffect(() => {
+    const url = process.env.NEXT_PUBLIC_BATTLE_MAPPING_CSV_URL;
+    if (!url) {
+      console.warn("NEXT_PUBLIC_BATTLE_MAPPING_CSV_URL が設定されていません");
+      return;
+    }
+
     let cancelled = false;
 
-    async function fetchMap() {
+    const load = async () => {
       try {
-        const url = process.env.NEXT_PUBLIC_BATTLE_MAPPING_CSV_URL;
-
-        // 環境変数が未設定の場合
-        if (!url) {
-          console.error(
-            "NEXT_PUBLIC_BATTLE_MAPPING_CSV_URL が設定されていません。battle name map は空のままになります。"
-          );
-          return;
-        }
-
-        const res = await fetch(url, { cache: "no-store" });
-
+        const res = await fetch(url);
         if (!res.ok) {
-          console.error(
-            "battle mapping csv fetch error",
-            res.status,
-            res.statusText
+          throw new Error(
+            `battle mapping CSV の取得に失敗しました: ${res.status}`
           );
+        }
+
+        const text = await res.text();
+        const lines = text.trim().split(/\r?\n/);
+        if (lines.length === 0) return;
+
+        const [headerLine, ...rows] = lines;
+        const headers = headerLine.split(",");
+
+        const bossNameIndex = headers.indexOf("boss_name");
+        const imageIndex = headers.indexOf("image");
+
+        if (bossNameIndex === -1) {
+          console.error("CSV に boss_name 列がありません");
           return;
         }
 
-        const csvText = await res.text();
-        if (cancelled) return;
+        const nextMap: BattleImageMap = {};
 
-        const lines = csvText
-          .split(/\r?\n/)
-          .map((line) => line.trim())
-          .filter((line) => line.length > 0);
+        for (const row of rows) {
+          if (!row.trim()) continue;
+          const cols = row.split(",");
 
-        if (lines.length === 0) {
-          setMap({});
-          return;
-        }
+          const bossName = cols[bossNameIndex]?.trim();
+          if (!bossName) continue;
 
-        // 1行目をヘッダとして解釈
-        const header = lines[0].split(",");
-
-        const bossNameIndex = header.findIndex(
-          (h) => h === "boss_name" || h === "bossName"
-        );
-        const battleNameIndex = header.findIndex(
-          (h) => h === "battle_name" || h === "battleName"
-        );
-
-        if (bossNameIndex === -1 || battleNameIndex === -1) {
-          console.error(
-            "battle mapping csv: ヘッダ行に boss_name / battle_name カラムが見つかりません。"
-          );
-          setMap({});
-          return;
-        }
-
-        const nextMap: BattleNameMap = {};
-
-        for (let i = 1; i < lines.length; i++) {
-          const cols = lines[i].split(",");
-          const boss = cols[bossNameIndex]?.trim();
-          const battle = cols[battleNameIndex]?.trim();
-          if (!boss || !battle) continue;
-          nextMap[boss] = battle;
+          const imageUrl =
+            imageIndex >= 0 ? cols[imageIndex]?.trim() : undefined;
+          if (imageUrl) {
+            nextMap[bossName] = imageUrl;
+          }
         }
 
         if (!cancelled) {
           setMap(nextMap);
         }
       } catch (e) {
-        if (!cancelled) {
-          console.error("failed to load battle mapping csv", e);
-        }
+        console.error(e);
       }
-    }
+    };
 
-    fetchMap();
+    load();
 
     return () => {
       cancelled = true;
