@@ -240,7 +240,8 @@ export default function GroupPage() {
                       <img
                         src={imageUrl}
                         alt={labelName}
-                        className="w-12 h-12 rounded"
+                        style={{ width: 180, height: 126 }} // 180x126 の比率で表示
+                        className="rounded"
                       />
                     )}
                     <div className="flex flex-col">
