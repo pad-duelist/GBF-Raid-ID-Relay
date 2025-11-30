@@ -8,13 +8,19 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: { persistSession: false },
 });
 
-// ===== ボス名ブロックリスト関連 =====
-const BOSS_BLOCKLIST_CSV_URL = process.env.BOSS_BLOCKLIST_CSV_URL;
+// ===== ボス名ブロックリスト・環境変数 デバッグ =====
+const BOSS_BLOCKLIST_CSV_URL =
+  process.env.BOSS_BLOCKLIST_CSV_URL ??
+  process.env.NEXT_PUBLIC_BOSS_BLOCKLIST_CSV_URL;
+
+console.log("[env debug] BOSS_BLOCKLIST_CSV_URL =", BOSS_BLOCKLIST_CSV_URL);
+
 let bossBlockList: Set<string> | null = null;
 let lastBossBlockListFetched = 0;
 const BOSS_BLOCKLIST_TTL = 5 * 60 * 1000; // 5分
 
 function normalizeBossName(name: string): string {
+  // とりあえず trim だけ（必要ならここでスペース除去ロジックを追加）
   return name.trim();
 }
 
@@ -28,30 +34,35 @@ async function loadBossBlockList(): Promise<Set<string>> {
   const set = new Set<string>();
 
   if (!BOSS_BLOCKLIST_CSV_URL) {
-    console.warn("BOSS_BLOCKLIST_CSV_URL が設定されていません");
+    console.warn("[boss blocklist] BOSS_BLOCKLIST_CSV_URL が設定されていません");
     bossBlockList = set;
     lastBossBlockListFetched = now;
     return set;
   }
 
   try {
+    console.log("[boss blocklist] fetching from", BOSS_BLOCKLIST_CSV_URL);
     const res = await fetch(BOSS_BLOCKLIST_CSV_URL);
-    const text = await res.text();
+    if (!res.ok) {
+      console.error("[boss blocklist] fetch failed:", res.status, res.statusText);
+    } else {
+      const text = await res.text();
 
-    const lines = text.split(/\r?\n/);
-    // 1行目はヘッダー boss_name
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (!line) continue;
-      const bossName = line.split(",")[0];
-      if (bossName) {
-        set.add(normalizeBossName(bossName));
+      const lines = text.split(/\r?\n/);
+      // 1行目はヘッダー boss_name
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        const bossName = line.split(",")[0];
+        if (bossName) {
+          set.add(normalizeBossName(bossName));
+        }
       }
-    }
 
-    console.log(`[boss blocklist] loaded ${set.size} names`);
+      console.log("[boss blocklist] loaded names:", Array.from(set.values()));
+    }
   } catch (e) {
-    console.error("ボスNGリスト取得に失敗しました", e);
+    console.error("[boss blocklist] 取得に失敗しました", e);
   }
 
   bossBlockList = set;
@@ -62,9 +73,11 @@ async function loadBossBlockList(): Promise<Set<string>> {
 async function isBlockedBoss(bossName: string | null | undefined): Promise<boolean> {
   if (!bossName) return false;
   const list = await loadBossBlockList();
-  return list.has(normalizeBossName(bossName));
+  const normalized = normalizeBossName(bossName);
+  const blocked = list.has(normalized);
+  console.log("[boss blocklist] check", { bossName, normalized, blocked });
+  return blocked;
 }
-// ================================
 
 // -------- GET /api/raids --------
 export async function GET(req: NextRequest) {
@@ -134,9 +147,9 @@ export async function POST(req: NextRequest) {
       memberMax,
     } = body;
 
-    // ★ボスブロック（ここで即スキップ）
+    // ★ボスブロック（デバッグ付き）
     if (await isBlockedBoss(bossName)) {
-      console.log(`ブロック対象ボスをスキップ: ${bossName}`);
+      console.log("[boss blocklist] ブロック対象ボスをスキップ:", bossName);
       return NextResponse.json(
         { ok: true, skipped: true, reason: "blocked_boss", bossName },
         { status: 200 }
@@ -144,6 +157,10 @@ export async function POST(req: NextRequest) {
     }
 
     if (!groupId || !raidId) {
+      console.warn("[POST /api/raids] groupId or raidId missing", {
+        groupId,
+        raidId,
+      });
       return NextResponse.json(
         { error: "groupId and raidId are required" },
         { status: 400 }
@@ -164,6 +181,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (existing) {
+      console.log("[POST /api/raids] duplicate raid id", { groupId, raidId });
       return NextResponse.json(
         { ok: true, duplicated: true },
         { status: 200 }
@@ -179,17 +197,14 @@ export async function POST(req: NextRequest) {
         hpValue !== undefined && hpValue !== null ? Number(hpValue) : null,
       hp_percent:
         hpPercent !== undefined && hpPercent !== null
-          ? Number(hpPercent)
-          : null,
+          ? Number(hpPercent) : null,
       user_name: userName ?? null,
       member_current:
         memberCurrent !== undefined && memberCurrent !== null
-          ? Number(memberCurrent)
-          : null,
+          ? Number(memberCurrent) : null,
       member_max:
         memberMax !== undefined && memberMax !== null
-          ? Number(memberMax)
-          : null,
+          ? Number(memberMax) : null,
     });
 
     if (insertError) {
@@ -199,6 +214,12 @@ export async function POST(req: NextRequest) {
         { status: 500 }
       );
     }
+
+    console.log("[POST /api/raids] inserted raid", {
+      groupId,
+      raidId,
+      bossName,
+    });
 
     return NextResponse.json({ ok: true }, { status: 200 });
   } catch (e) {
