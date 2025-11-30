@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useRef, FormEvent } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useEffect, useState, useRef } from "react";
+import { useParams } from "next/navigation";
 import { formatTimeAgo } from "@/lib/timeAgo";
 import { formatNumberWithComma } from "@/lib/numberFormat";
 import { useBattleNameMap } from "@/lib/useBattleNameMap";
@@ -11,44 +11,32 @@ type RaidRow = {
   group_id: string;
   raid_id: string;
   boss_name: string | null;
-  battle_name: string | null; // 画像URLが入っている場合あり
+  battle_name: string | null;
   hp_value: number | null;
   hp_percent: number | null;
   user_name: string | null;
   created_at: string;
 };
 
+// URL 判定（battle_name / boss_name のどちらかが URL の場合もケア）
 const looksLikeUrl = (s: string | null | undefined): boolean =>
   !!s && /^https?:\/\//.test(s);
 
 export default function GroupPage() {
-  const params = useParams() as { groupId?: string };
-  const router = useRouter();
-
-  const initialGroupId = params.groupId ?? "";
-  const [groupId, setGroupId] = useState(initialGroupId);
-  const [groupInput, setGroupInput] = useState(initialGroupId);
+  const params = useParams<{ groupId: string }>();
+  const groupId = params.groupId;
 
   const [raids, setRaids] = useState<RaidRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [bossFilter, setBossFilter] = useState<string>("");
   const [copyMessage, setCopyMessage] = useState<string | null>(null);
 
-  // 🔔 新着ID用
+  // 🔔 新着ID用: 最後に通知したレコードID
   const [lastNotifiedId, setLastNotifiedId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // boss_name → image URL（スプレッドシート）
+  // ★ スプレッドシートの対応表（boss_name → 画像URL）
   const battleMap = useBattleNameMap();
-
-  // グループ名入力フォームの submit
-  const handleGroupSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    const value = groupInput.trim();
-    if (!value) return;
-    router.push(`/groups/${encodeURIComponent(value)}`);
-    setGroupId(value);
-  };
 
   const fetchRaids = async () => {
     if (!groupId) {
@@ -59,14 +47,13 @@ export default function GroupPage() {
 
     try {
       const query = new URLSearchParams({
-        groupId,
+        groupId: String(groupId),
         limit: "50",
       });
 
       const res = await fetch(`/api/raids?${query.toString()}`, {
         cache: "no-store",
       });
-
       if (!res.ok) {
         console.error("failed to fetch raids", res.status);
         setRaids([]);
@@ -86,6 +73,7 @@ export default function GroupPage() {
   useEffect(() => {
     setLoading(true);
     fetchRaids();
+    // ✅ 1秒ごとの自動更新
     const timer = setInterval(fetchRaids, 1000);
     return () => clearInterval(timer);
   }, [groupId]);
@@ -100,33 +88,35 @@ export default function GroupPage() {
     }
   }
 
-  // 効果音読み込み
+  // 🔔 効果音の読み込み（初回のみ）
   useEffect(() => {
-    audioRef.current = new Audio("/notify.wav");
+    audioRef.current = new Audio("/notify.mp3");
   }, []);
 
-  // 新着IDで音を鳴らす
+  // 🔔 新しいIDが流れたときに音を鳴らす
   useEffect(() => {
     if (!raids || raids.length === 0) return;
 
-    const latestRaidId = raids[0].id;
+    const latestRaidId = raids[0].id; // 一番新しいレコード
 
+    // 初回ロード時は基準だけセットして音は鳴らさない
     if (lastNotifiedId === null) {
       setLastNotifiedId(latestRaidId);
       return;
     }
 
+    // 前回と違うレコードIDなら「新しいIDが流れた」とみなす
     if (latestRaidId !== lastNotifiedId) {
       audioRef.current
         ?.play()
         .catch(() => {
-          // 自動再生制限に引っかかった場合は無視
+          // 自動再生制限に引っかかった場合は握りつぶす
         });
       setLastNotifiedId(latestRaidId);
     }
   }, [raids, lastNotifiedId]);
 
-  // 表示用のボス名（URL は除外）
+  // 表示用ボス名（URL は除外して、純粋な名前を優先）
   const getDisplayName = (raid: RaidRow): string => {
     const boss = raid.boss_name?.trim() || "";
     const battle = raid.battle_name?.trim() || "";
@@ -138,22 +128,20 @@ export default function GroupPage() {
 
   // 画像URLの決定
   const getImageUrl = (raid: RaidRow): string | undefined => {
-    // 1. battle_name が URL ならそれを優先（新仕様）
+    // 1. battle_name が URL ならそれを優先（今のDB仕様に対応）
     if (looksLikeUrl(raid.battle_name)) {
       return raid.battle_name as string;
     }
-
-    // 2. boss_name が URL ならそれを使う（保険）
+    // 2. boss_name が URL の場合
     if (looksLikeUrl(raid.boss_name)) {
       return raid.boss_name as string;
     }
-
     // 3. どちらも URL でなければ、表示名からスプレッドシートのマップを引く
     const name = getDisplayName(raid);
     return battleMap[name];
   };
 
-  // 絞り込み候補は「表示名」で作る
+  // ★ 絞り込み候補：表示名でユニーク化
   const uniqueBosses = Array.from(
     new Set(
       raids
@@ -162,50 +150,25 @@ export default function GroupPage() {
     )
   );
 
+  // ★ 表示用だけフィルタする
   const filteredRaids = bossFilter
-    ? raids.filter((r) => getDisplayName(r) === bossFilter)
+    ? raids.filter((raid) => getDisplayName(raid) === bossFilter)
     : raids;
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-50 p-4">
       <div className="max-w-3xl mx-auto space-y-4">
-        <header className="flex flex-col gap-4">
-          {/* 上段：タイトル */}
+        <header className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-xl font-bold">
-              参戦ID共有ビューア - グループ:{" "}
-              {groupId || <span className="text-slate-500">未選択</span>}
+              参戦ID共有ビューア - グループ: {groupId}
             </h1>
             <p className="text-sm text-slate-400">
               1秒ごとに自動更新 / クリックでIDコピー
             </p>
           </div>
 
-          {/* 中段：グループ名入力フォーム */}
-          <form
-            onSubmit={handleGroupSubmit}
-            className="flex flex-col sm:flex-row gap-2 sm:items-center"
-          >
-            <label className="text-xs sm:text-sm text-slate-300">
-              グループ名
-            </label>
-            <input
-              type="text"
-              value={groupInput}
-              onChange={(e) => setGroupInput(e.target.value)}
-              placeholder="例: test"
-              className="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs sm:text-sm"
-            />
-            <button
-              type="submit"
-              className="bg-emerald-500 hover:bg-emerald-400 text-slate-900 font-semibold rounded px-3 py-1 text-xs sm:text-sm"
-            >
-              開く
-            </button>
-          </form>
-
-          {/* 下段：絞り込み＋音テスト */}
-          <div className="flex items-center gap-4 justify-between">
+          <div className="flex items-center gap-2">
             <div className="flex flex-col gap-1">
               <label className="text-xs sm:text-sm text-slate-300">
                 マルチ絞り込み
@@ -224,6 +187,7 @@ export default function GroupPage() {
               </select>
             </div>
 
+            {/* 🔔 自動再生制限対策用のサウンドテストボタン */}
             <button
               type="button"
               onClick={() =>
@@ -231,7 +195,7 @@ export default function GroupPage() {
                   /* 無視 */
                 })
               }
-              className="bg-slate-700 hover:bg-slate-600 text-xs px-2 py-1 rounded"
+              className="ml-2 bg-slate-700 hover:bg-slate-600 text-xs px-2 py-1 rounded"
             >
               音テスト
             </button>
