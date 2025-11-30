@@ -34,15 +34,10 @@ async function getOrCreateProfile(userId: string) {
     throw new Error("プロフィール取得に失敗しました。");
   }
 
-  if (data) {
-    return data;
-  }
+  if (data) return data;
 
   // なければ作成
-  const insert = {
-    user_id: userId,
-    extension_token: null,
-  };
+  const insert = { user_id: userId, extension_token: null };
 
   const { error: insertError } = await supabase
     .from("profiles")
@@ -69,7 +64,6 @@ export async function GET(req: NextRequest) {
 
     const profile = await getOrCreateProfile(userId);
 
-    // まだトークンがない場合は発行
     let token = profile.extension_token as string | null;
 
     if (!token) {
@@ -110,18 +104,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // body は一応受けるが、今は rotate の有無に関わらず「再発行」として扱う
-    const body = await req.json().catch(() => ({}));
-    const rotate = body?.rotate ?? true;
-
-    if (!rotate) {
-      // rotate=false で呼ぶことはほぼ無い想定。将来拡張用。
-    }
+    // body は一応受けるが、今は rotate の有無に関わらず再発行扱い
+    await req.json().catch(() => ({}));
 
     // プロファイルが無ければ作成
     await getOrCreateProfile(userId);
 
-    // 新しいトークンを発行
     const newToken = randomUUID();
 
     const { error: updateError } = await supabase
@@ -137,10 +125,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return NextResponse.json(
-      { extensionToken: newToken },
-      { status: 200 }
-    );
+    return NextResponse.json({ extensionToken: newToken }, { status: 200 });
   } catch (e: any) {
     console.error("POST /api/profile/extension-token error", e);
     return NextResponse.json(

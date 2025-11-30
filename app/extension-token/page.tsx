@@ -1,4 +1,4 @@
-// app/settings/extension-token/page.tsx
+// app/extension-token/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -182,7 +182,7 @@ export default function ExtensionTokenPage() {
             <button
               type="button"
               onClick={handleRotate}
-              className="rounded bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+              className="rounded bg-red-600 px-4 py-2 text-sm font-semibold text白 hover:bg-red-700 disabled:opacity-50"
               disabled={state.loading}
             >
               トークンを再発行する
