@@ -223,3 +223,111 @@ export async function POST(req: NextRequest) {
       battleName,
       hpValue,
       hpPercent,
+      userName,
+      memberCurrent,
+      memberMax,
+      extensionToken,
+      extension_token,
+    } = body ?? {};
+
+    const tokenFromHeader =
+      req.headers.get("x-extension-token") ??
+      req.headers.get("X-Extension-Token");
+    const effectiveExtensionToken =
+      tokenFromHeader ?? extensionToken ?? extension_token ?? null;
+
+    if (await isBlockedBoss(bossName)) {
+      return NextResponse.json(
+        { ok: true, skipped: true, reason: "blocked_boss", bossName },
+        { status: 200 }
+      );
+    }
+
+    if (!groupId || !raidId) {
+      return NextResponse.json(
+        { error: "groupId and raidId are required" },
+        { status: 400 }
+      );
+    }
+
+    if (!effectiveExtensionToken) {
+      return NextResponse.json(
+        { error: "extension token is required" },
+        { status: 401 }
+      );
+    }
+
+    const senderUserId = await getUserIdFromExtensionToken(
+      effectiveExtensionToken
+    );
+
+    if (!senderUserId) {
+      return NextResponse.json(
+        { error: "invalid extension token" },
+        { status: 401 }
+      );
+    }
+
+    const isMember = await isUserMemberOfGroup(groupId, senderUserId);
+    if (!isMember) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const { data: existing, error: selectError } = await supabase
+      .from("raids")
+      .select("id")
+      .eq("group_id", groupId)
+      .eq("raid_id", raidId)
+      .limit(1)
+      .maybeSingle();
+
+    if (selectError && (selectError as any).code !== "PGRST116") {
+      console.error("select error", selectError);
+    }
+
+    if (existing) {
+      return NextResponse.json(
+        { ok: true, duplicated: true },
+        { status: 200 }
+      );
+    }
+
+    const { error: insertError } = await supabase.from("raids").insert({
+      group_id: groupId,
+      raid_id: raidId,
+      boss_name: bossName ?? null,
+      battle_name: battleName ?? null,
+      hp_value:
+        hpValue !== undefined && hpValue !== null ? Number(hpValue) : null,
+      hp_percent:
+        hpPercent !== undefined && hpPercent !== null
+          ? Number(hpPercent)
+          : null,
+      user_name: userName ?? null,
+      member_current:
+        memberCurrent !== undefined && memberCurrent !== null
+          ? Number(memberCurrent)
+          : null,
+      member_max:
+        memberMax !== undefined && memberMax !== null
+          ? Number(memberMax)
+          : null,
+      sender_user_id: senderUserId,
+    });
+
+    if (insertError) {
+      return NextResponse.json(
+        { error: insertError.message },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ ok: true }, { status: 200 });
+  } catch (e) {
+    console.error("POST /api/raids error", e);
+    return NextResponse.json(
+      { error: "Unexpected error" },
+      { status: 500 }
+    );
+  }
+}
