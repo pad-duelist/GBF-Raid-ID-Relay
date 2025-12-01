@@ -42,6 +42,7 @@ async function loadBossBlockList(): Promise<Set<string>> {
     if (res.ok) {
       const text = await res.text();
       const lines = text.split(/\r?\n/);
+      // 1行目はヘッダー想定
       for (let i = 1; i < lines.length; i++) {
         const line = lines[i].trim();
         if (!line) continue;
@@ -148,32 +149,35 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  // ログインユーザー
+  // ログインユーザー（任意）
   const viewerUserId =
     getUserIdFromRequest(req) ?? searchParams.get("userId") ?? undefined;
 
-  if (!viewerUserId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  let allowedGroupIds: string[] = [];
 
-  // ユーザーが所属している requestedGroupIds を取得
-  const { data: memberships, error: mError } = await supabase
-    .from("group_memberships")
-    .select("group_id, status")
-    .eq("user_id", viewerUserId)
-    .in("group_id", requestedGroupIds);
+  if (viewerUserId) {
+    // ユーザーが所属している requestedGroupIds を取得
+    const { data: memberships, error: mError } = await supabase
+      .from("group_memberships")
+      .select("group_id, status")
+      .eq("user_id", viewerUserId)
+      .in("group_id", requestedGroupIds);
 
-  if (mError && (mError as any).code !== "PGRST116") {
-    console.error("[group_memberships] select error", mError);
-  }
+    if (mError && (mError as any).code !== "PGRST116") {
+      console.error("[group_memberships] select error", mError);
+    }
 
-  const allowedGroupIds = (memberships ?? [])
-    .filter((m) => m.status === "member" || m.status === "owner")
-    .map((m) => m.group_id as string);
+    allowedGroupIds = (memberships ?? [])
+      .filter((m) => m.status === "member" || m.status === "owner")
+      .map((m) => m.group_id as string);
 
-  if (allowedGroupIds.length === 0) {
-    // 要求されたグループのどれにも所属していない
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    if (allowedGroupIds.length === 0) {
+      // 要求されたグループのどれにも所属していない
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+  } else {
+    // viewerUserId が無い場合は、所属チェックなしでそのまま使用
+    allowedGroupIds = requestedGroupIds;
   }
 
   let query = supabase
@@ -194,9 +198,13 @@ export async function GET(req: NextRequest) {
       ].join(",")
     )
     .in("group_id", allowedGroupIds) // 複数グループ
-    .neq("sender_user_id", viewerUserId)
     .order("created_at", { ascending: false })
     .limit(isNaN(limit) ? 50 : limit);
+
+  // viewerUserId があれば「自分が流したもの」を除外
+  if (viewerUserId) {
+    query = query.neq("sender_user_id", viewerUserId);
+  }
 
   if (bossName) {
     query = query.eq("boss_name", bossName);
@@ -236,6 +244,7 @@ export async function POST(req: NextRequest) {
     const effectiveExtensionToken =
       tokenFromHeader ?? extensionToken ?? extension_token ?? null;
 
+    // ブロック対象ボスなら何もせずスキップ
     if (await isBlockedBoss(bossName)) {
       return NextResponse.json(
         { ok: true, skipped: true, reason: "blocked_boss", bossName },
@@ -273,6 +282,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
+    // 同じ groupId + raidId があれば挿入しない
     const { data: existing, error: selectError } = await supabase
       .from("raids")
       .select("id")
