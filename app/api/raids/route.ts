@@ -8,16 +8,19 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: { persistSession: false },
 });
 
-// ===== ボス名ブロックリスト =====
+// ===== ボス名ブロックリスト・環境変数 デバッグ =====
 const BOSS_BLOCKLIST_CSV_URL =
   process.env.BOSS_BLOCKLIST_CSV_URL ??
   process.env.NEXT_PUBLIC_BOSS_BLOCKLIST_CSV_URL;
+
+console.log("[env debug] BOSS_BLOCKLIST_CSV_URL =", BOSS_BLOCKLIST_CSV_URL);
 
 let bossBlockList: Set<string> | null = null;
 let lastBossBlockListFetched = 0;
 const BOSS_BLOCKLIST_TTL = 5 * 60 * 1000; // 5分
 
 function normalizeBossName(name: string): string {
+  // とりあえず trim だけ（必要ならここでスペース除去ロジックを追加）
   return name.trim();
 }
 
@@ -38,23 +41,25 @@ async function loadBossBlockList(): Promise<Set<string>> {
   }
 
   try {
+    console.log("[boss blocklist] fetching from", BOSS_BLOCKLIST_CSV_URL);
     const res = await fetch(BOSS_BLOCKLIST_CSV_URL);
-    if (res.ok) {
+    if (!res.ok) {
+      console.error("[boss blocklist] fetch failed:", res.status, res.statusText);
+    } else {
       const text = await res.text();
+
       const lines = text.split(/\r?\n/);
-      // 1行目はヘッダー想定
+      // 1行目はヘッダー boss_name
       for (let i = 1; i < lines.length; i++) {
         const line = lines[i].trim();
         if (!line) continue;
         const bossName = line.split(",")[0];
-        if (bossName) set.add(normalizeBossName(bossName));
+        if (bossName) {
+          set.add(normalizeBossName(bossName));
+        }
       }
-    } else {
-      console.error(
-        "[boss blocklist] fetch failed:",
-        res.status,
-        res.statusText
-      );
+
+      console.log("[boss blocklist] loaded names:", Array.from(set.values()));
     }
   } catch (e) {
     console.error("[boss blocklist] 取得に失敗しました", e);
@@ -65,40 +70,27 @@ async function loadBossBlockList(): Promise<Set<string>> {
   return set;
 }
 
-async function isBlockedBoss(
-  bossName: string | null | undefined
-): Promise<boolean> {
+async function isBlockedBoss(bossName: string | null | undefined): Promise<boolean> {
   if (!bossName) return false;
   const list = await loadBossBlockList();
   const normalized = normalizeBossName(bossName);
-  return list.has(normalized);
+  const blocked = list.has(normalized);
+  console.log("[boss blocklist] check", { bossName, normalized, blocked });
+  return blocked;
 }
 
 // -------- GET /api/raids --------
-// 認証・トークンチェック一切なし。指定グループのIDをそのまま返す。
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
-
-  const groupIdSingle = searchParams.get("groupId");
-  const groupIdsParam = searchParams.get("groupIds");
+  const groupId = searchParams.get("groupId");
   const bossName = searchParams.get("bossName");
   const limitParam = searchParams.get("limit") ?? "50";
+
   const limit = Number(limitParam);
 
-  let groupIds: string[] = [];
-
-  if (groupIdsParam) {
-    groupIds = groupIdsParam
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-  } else if (groupIdSingle) {
-    groupIds = [groupIdSingle];
-  }
-
-  if (groupIds.length === 0) {
+  if (!groupId) {
     return NextResponse.json(
-      { error: "groupId or groupIds is required" },
+      { error: "groupId is required" },
       { status: 400 }
     );
   }
@@ -120,7 +112,7 @@ export async function GET(req: NextRequest) {
         "member_max",
       ].join(",")
     )
-    .in("group_id", groupIds)
+    .eq("group_id", groupId)
     .order("created_at", { ascending: false })
     .limit(isNaN(limit) ? 50 : limit);
 
@@ -131,7 +123,7 @@ export async function GET(req: NextRequest) {
   const { data, error } = await query;
 
   if (error) {
-    console.error("[GET /api/raids] supabase error:", error);
+    console.error("GET /api/raids error", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
@@ -139,8 +131,6 @@ export async function GET(req: NextRequest) {
 }
 
 // -------- POST /api/raids --------
-// トークン・グループ所属チェックなしで、ただ insert するだけ。
-// 同じ groupId + raidId があればスキップ。
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -155,9 +145,11 @@ export async function POST(req: NextRequest) {
       userName,
       memberCurrent,
       memberMax,
-    } = body ?? {};
+    } = body;
 
+    // ★ボスブロック（デバッグ付き）
     if (await isBlockedBoss(bossName)) {
+      console.log("[boss blocklist] ブロック対象ボスをスキップ:", bossName);
       return NextResponse.json(
         { ok: true, skipped: true, reason: "blocked_boss", bossName },
         { status: 200 }
@@ -165,6 +157,10 @@ export async function POST(req: NextRequest) {
     }
 
     if (!groupId || !raidId) {
+      console.warn("[POST /api/raids] groupId or raidId missing", {
+        groupId,
+        raidId,
+      });
       return NextResponse.json(
         { error: "groupId and raidId are required" },
         { status: 400 }
@@ -180,11 +176,12 @@ export async function POST(req: NextRequest) {
       .limit(1)
       .maybeSingle();
 
-    if (selectError && (selectError as any).code !== "PGRST116") {
-      console.error("[POST /api/raids] select error", selectError);
+    if (selectError && selectError.code !== "PGRST116") {
+      console.error("select error", selectError);
     }
 
     if (existing) {
+      console.log("[POST /api/raids] duplicate raid id", { groupId, raidId });
       return NextResponse.json(
         { ok: true, duplicated: true },
         { status: 200 }
@@ -200,8 +197,7 @@ export async function POST(req: NextRequest) {
         hpValue !== undefined && hpValue !== null ? Number(hpValue) : null,
       hp_percent:
         hpPercent !== undefined && hpPercent !== null
-          ? Number(hpPercent)
-          : null,
+          ? Number(hpPercent) : null,
       user_name: userName ?? null,
       member_current:
         memberCurrent !== undefined && memberCurrent !== null
@@ -212,16 +208,22 @@ export async function POST(req: NextRequest) {
     });
 
     if (insertError) {
-      console.error("[POST /api/raids] insert error", insertError);
+      console.error("insert error", insertError);
       return NextResponse.json(
         { error: insertError.message },
         { status: 500 }
       );
     }
 
+    console.log("[POST /api/raids] inserted raid", {
+      groupId,
+      raidId,
+      bossName,
+    });
+
     return NextResponse.json({ ok: true }, { status: 200 });
   } catch (e) {
-    console.error("[POST /api/raids] error", e);
+    console.error("POST /api/raids error", e);
     return NextResponse.json(
       { error: "Unexpected error" },
       { status: 500 }
