@@ -12,9 +12,9 @@ type TokenState = {
 };
 
 type GroupInfo = {
-  id: string;
-  name: string;
-  status: string; // "member" | "owner" など
+  id: string;    // groups.id (uuid)
+  name: string;  // groups.name (例: "Group1", "Apoklisi", "LostFragments")
+  status: string;
 };
 
 export default function ExtensionTokenPage() {
@@ -294,7 +294,7 @@ export default function ExtensionTokenPage() {
                   </div>
                 </div>
                 <a
-                  href={`/?groupIds=${encodeURIComponent(g.id)}`}
+                  href={`/g/${encodeURIComponent(g.name)}`}
                   className="rounded bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-700"
                 >
                   このグループの救援一覧へ
