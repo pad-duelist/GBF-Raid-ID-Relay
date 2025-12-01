@@ -46,10 +46,28 @@ export default function GroupPage() {
     }
 
     try {
+      // ★ 自分のトークンを localStorage から取得
+      //   extension-token ページなどで:
+      //   localStorage.setItem("extensionToken", token)
+      //   しておく想定
+      let token: string | null = null;
+      try {
+        if (typeof window !== "undefined") {
+          token = localStorage.getItem("extensionToken");
+        }
+      } catch {
+        token = null;
+      }
+
       const query = new URLSearchParams({
         groupId: String(groupId),
         limit: "50",
       });
+
+      // 自分のトークンがあれば、そのトークンに紐づくIDをサーバー側で除外してもらう
+      if (token && token.trim().length > 0) {
+        query.set("excludeToken", token.trim());
+      }
 
       const res = await fetch(`/api/raids?${query.toString()}`, {
         cache: "no-store",
@@ -60,7 +78,15 @@ export default function GroupPage() {
         return;
       }
 
-      const data: RaidRow[] = await res.json();
+      const json = await res.json();
+
+      // 互換性のため:
+      // - 旧実装: 直接配列が返ってくる
+      // - 新実装: { raids: RaidRow[] } が返ってくる
+      const data: RaidRow[] = Array.isArray(json)
+        ? json
+        : (json.raids as RaidRow[]) ?? [];
+
       setRaids(data);
     } catch (e) {
       console.error("fetchRaids error", e);
