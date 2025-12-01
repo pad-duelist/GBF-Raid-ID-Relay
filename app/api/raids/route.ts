@@ -74,110 +74,33 @@ async function isBlockedBoss(
   return list.has(normalized);
 }
 
-// ===== グループ承認 / ユーザー識別系 =====
-
-function getUserIdFromRequest(req: NextRequest): string | null {
-  const headerUserId =
-    req.headers.get("x-user-id") ?? req.headers.get("X-User-Id");
-  if (headerUserId && headerUserId.trim().length > 0) {
-    return headerUserId.trim();
-  }
-  return null;
-}
-
-async function getUserIdFromExtensionToken(
-  extensionToken: string
-): Promise<string | null> {
-  const { data, error } = await supabase
-    .from("profiles")
-    .select("user_id")
-    .eq("extension_token", extensionToken)
-    .maybeSingle();
-
-  if (error && (error as any).code !== "PGRST116") {
-    console.error("[profiles] select error", error);
-  }
-
-  return data?.user_id ?? null;
-}
-
-async function isUserMemberOfGroup(
-  groupId: string,
-  userId: string
-): Promise<boolean> {
-  const { data, error } = await supabase
-    .from("group_memberships")
-    .select("id, status")
-    .eq("group_id", groupId)
-    .eq("user_id", userId)
-    .in("status", ["member", "owner"])
-    .maybeSingle();
-
-  if (error && (error as any).code !== "PGRST116") {
-    console.error("[group_memberships] select error", error);
-  }
-
-  return !!data;
-}
-
 // -------- GET /api/raids --------
+// 認証・トークンチェック一切なし。指定グループのIDをそのまま返す。
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
 
-  const groupIdSingle = searchParams.get("groupId"); // 旧仕様
-  const groupIdsParam = searchParams.get("groupIds"); // 新仕様（カンマ区切り）
+  const groupIdSingle = searchParams.get("groupId");
+  const groupIdsParam = searchParams.get("groupIds");
   const bossName = searchParams.get("bossName");
   const limitParam = searchParams.get("limit") ?? "50";
   const limit = Number(limitParam);
 
-  // 要求されたグループ一覧を決定
-  let requestedGroupIds: string[] = [];
+  let groupIds: string[] = [];
 
   if (groupIdsParam) {
-    requestedGroupIds = groupIdsParam
+    groupIds = groupIdsParam
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
   } else if (groupIdSingle) {
-    requestedGroupIds = [groupIdSingle];
+    groupIds = [groupIdSingle];
   }
 
-  if (requestedGroupIds.length === 0) {
+  if (groupIds.length === 0) {
     return NextResponse.json(
       { error: "groupId or groupIds is required" },
       { status: 400 }
     );
-  }
-
-  // ログインユーザー（任意）
-  const viewerUserId =
-    getUserIdFromRequest(req) ?? searchParams.get("userId") ?? undefined;
-
-  let allowedGroupIds: string[] = [];
-
-  if (viewerUserId) {
-    // ユーザーが所属している requestedGroupIds を取得
-    const { data: memberships, error: mError } = await supabase
-      .from("group_memberships")
-      .select("group_id, status")
-      .eq("user_id", viewerUserId)
-      .in("group_id", requestedGroupIds);
-
-    if (mError && (mError as any).code !== "PGRST116") {
-      console.error("[group_memberships] select error", mError);
-    }
-
-    allowedGroupIds = (memberships ?? [])
-      .filter((m) => m.status === "member" || m.status === "owner")
-      .map((m) => m.group_id as string);
-
-    if (allowedGroupIds.length === 0) {
-      // 要求されたグループのどれにも所属していない
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-  } else {
-    // viewerUserId が無い場合は、所属チェックなしでそのまま使用
-    allowedGroupIds = requestedGroupIds;
   }
 
   let query = supabase
@@ -197,14 +120,9 @@ export async function GET(req: NextRequest) {
         "member_max",
       ].join(",")
     )
-    .in("group_id", allowedGroupIds) // 複数グループ
+    .in("group_id", groupIds)
     .order("created_at", { ascending: false })
     .limit(isNaN(limit) ? 50 : limit);
-
-  // viewerUserId があれば「自分が流したもの」を除外
-  if (viewerUserId) {
-    query = query.neq("sender_user_id", viewerUserId);
-  }
 
   if (bossName) {
     query = query.eq("boss_name", bossName);
@@ -213,6 +131,7 @@ export async function GET(req: NextRequest) {
   const { data, error } = await query;
 
   if (error) {
+    console.error("[GET /api/raids] supabase error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
@@ -220,6 +139,8 @@ export async function GET(req: NextRequest) {
 }
 
 // -------- POST /api/raids --------
+// トークン・グループ所属チェックなしで、ただ insert するだけ。
+// 同じ groupId + raidId があればスキップ。
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -234,17 +155,8 @@ export async function POST(req: NextRequest) {
       userName,
       memberCurrent,
       memberMax,
-      extensionToken,
-      extension_token,
     } = body ?? {};
 
-    const tokenFromHeader =
-      req.headers.get("x-extension-token") ??
-      req.headers.get("X-Extension-Token");
-    const effectiveExtensionToken =
-      tokenFromHeader ?? extensionToken ?? extension_token ?? null;
-
-    // ブロック対象ボスなら何もせずスキップ
     if (await isBlockedBoss(bossName)) {
       return NextResponse.json(
         { ok: true, skipped: true, reason: "blocked_boss", bossName },
@@ -259,30 +171,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!effectiveExtensionToken) {
-      return NextResponse.json(
-        { error: "extension token is required" },
-        { status: 401 }
-      );
-    }
-
-    const senderUserId = await getUserIdFromExtensionToken(
-      effectiveExtensionToken
-    );
-
-    if (!senderUserId) {
-      return NextResponse.json(
-        { error: "invalid extension token" },
-        { status: 401 }
-      );
-    }
-
-    const isMember = await isUserMemberOfGroup(groupId, senderUserId);
-    if (!isMember) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
-
-    // 同じ groupId + raidId があれば挿入しない
+    // 重複チェック
     const { data: existing, error: selectError } = await supabase
       .from("raids")
       .select("id")
@@ -292,7 +181,7 @@ export async function POST(req: NextRequest) {
       .maybeSingle();
 
     if (selectError && (selectError as any).code !== "PGRST116") {
-      console.error("select error", selectError);
+      console.error("[POST /api/raids] select error", selectError);
     }
 
     if (existing) {
@@ -316,16 +205,14 @@ export async function POST(req: NextRequest) {
       user_name: userName ?? null,
       member_current:
         memberCurrent !== undefined && memberCurrent !== null
-          ? Number(memberCurrent)
-          : null,
+          ? Number(memberCurrent) : null,
       member_max:
         memberMax !== undefined && memberMax !== null
-          ? Number(memberMax)
-          : null,
-      sender_user_id: senderUserId,
+          ? Number(memberMax) : null,
     });
 
     if (insertError) {
+      console.error("[POST /api/raids] insert error", insertError);
       return NextResponse.json(
         { error: insertError.message },
         { status: 500 }
@@ -334,7 +221,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true }, { status: 200 });
   } catch (e) {
-    console.error("POST /api/raids error", e);
+    console.error("[POST /api/raids] error", e);
     return NextResponse.json(
       { error: "Unexpected error" },
       { status: 500 }
