@@ -53,10 +53,11 @@ async function loadBossBlockList(): Promise<Set<string>> {
       for (let i = 1; i < lines.length; i++) {
         const line = lines[i].trim();
         if (!line) continue;
-        const [name] = line.split(",");
-        if (!name) continue;
-        const normalized = normalizeBossName(name);
-        set.add(normalized);
+
+        const bossName = line.split(",")[0];
+        if (bossName) {
+          set.add(normalizeBossName(bossName));
+        }
       }
 
       console.log(
@@ -143,35 +144,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const transformed =
-    (data ?? []).map((row) => ({
-      id: row.id,
-      groupId: row.group_id,
-      raidId: row.raid_id,
-      bossName: row.boss_name,
-      battleName: row.battle_name,
-      hpValue:
-        row.hp_value !== null && row.hp_value !== undefined
-          ? Number(row.hp_value)
-          : null,
-      hpPercent:
-        row.hp_percent !== null && row.hp_percent !== undefined
-          ? Number(row.hp_percent)
-          : null,
-      userName: row.user_name,
-      createdAt: row.created_at,
-      memberCurrent:
-        row.member_current !== null && row.member_current !== undefined
-          ? Number(row.member_current)
-          : null,
-      memberMax:
-        row.member_max !== null && row.member_max !== undefined
-          ? Number(row.member_max)
-          : null,
-      senderUserId: row.sender_user_id,
-    })) as any;
-
-  return NextResponse.json(transformed);
+  return NextResponse.json(data ?? []);
 }
 
 // -------- POST /api/raids --------
@@ -189,8 +162,6 @@ export async function POST(req: NextRequest) {
       userName,
       memberCurrent,
       memberMax,
-      currentMemberCount,
-      maxMemberCount,
       senderUserId,
     }: {
       groupId?: string;
@@ -202,15 +173,8 @@ export async function POST(req: NextRequest) {
       userName?: string | null;
       memberCurrent?: number | null;
       memberMax?: number | null;
-      currentMemberCount?: number | null;
-      maxMemberCount?: number | null;
       senderUserId?: string | null;
     } = body;
-
-    // currentMemberCount / maxMemberCount を既存の memberCurrent / memberMax と統合
-    const normalizedMemberCurrent =
-      memberCurrent ?? currentMemberCount ?? null;
-    const normalizedMemberMax = memberMax ?? maxMemberCount ?? null;
 
     if (!groupId || !raidId) {
       return NextResponse.json(
@@ -221,11 +185,7 @@ export async function POST(req: NextRequest) {
 
     // ブロック対象ボスなら保存しない
     if (await isBlockedBoss(bossName)) {
-      console.log("[boss blocklist] skip insert", {
-        groupId,
-        raidId,
-        bossName,
-      });
+      console.log("[boss blocklist] skip insert", { groupId, raidId, bossName });
       return NextResponse.json({ ok: true, blocked: true }, { status: 200 });
     }
 
@@ -263,13 +223,12 @@ export async function POST(req: NextRequest) {
           : null,
       user_name: userName ?? null,
       member_current:
-        normalizedMemberCurrent !== undefined &&
-        normalizedMemberCurrent !== null
-          ? Number(normalizedMemberCurrent)
+        memberCurrent !== undefined && memberCurrent !== null
+          ? Number(memberCurrent)
           : null,
       member_max:
-        normalizedMemberMax !== undefined && normalizedMemberMax !== null
-          ? Number(normalizedMemberMax)
+        memberMax !== undefined && memberMax !== null
+          ? Number(memberMax)
           : null,
       sender_user_id: senderUserId ?? null,
     });
