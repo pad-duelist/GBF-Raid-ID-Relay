@@ -1,19 +1,22 @@
-import type { Metadata } from "next";
+// app/layout.tsx
 import "./globals.css";
+import type { Metadata } from "next";
+import { ReactNode } from "react";
+import { DiscordProfileSyncClient } from "@/app/components/DiscordProfileSyncClient";
 
 export const metadata: Metadata = {
-  title: "GBF 参戦ID共有ビューア",
-  description: "グラブル用の参戦ID共有ツール（Supabase + Next.js）",
+  title: "GBF Raid ID Relay",
+  description: "Granblue Fantasy raid id viewer",
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ja">
-      <body className="min-h-screen">{children}</body>
+      <body>
+        {/* ここで Discord プロフィール同期を一度だけ実行 */}
+        <DiscordProfileSyncClient />
+        {children}
+      </body>
     </html>
   );
 }
