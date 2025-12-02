@@ -74,6 +74,18 @@ async function isBlockedBoss(
   return list.has(normalizeBossName(bossName));
 }
 
+function toNumberOrNull(v: any): number | null {
+  if (v === undefined || v === null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function toIntOrNull(v: any): number | null {
+  const n = toNumberOrNull(v);
+  if (n === null) return null;
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+
 // ===== GET: 一覧取得 =====
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -84,10 +96,7 @@ export async function GET(req: NextRequest) {
   const excludeUserId = searchParams.get("excludeUserId");
 
   if (!groupId) {
-    return NextResponse.json(
-      { error: "groupId is required" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "groupId is required" }, { status: 400 });
   }
 
   let query = supabase
@@ -98,8 +107,11 @@ export async function GET(req: NextRequest) {
         "group_id",
         "raid_id",
         "boss_name",
+        "battle_name",
         "hp_value",
         "hp_percent",
+        "member_current",
+        "member_max",
         "user_name",
         "created_at",
         "sender_user_id",
@@ -116,9 +128,7 @@ export async function GET(req: NextRequest) {
   // ★ 自分のIDだけ除外したいが、sender_user_id が NULL のレコードは表示したい
   // -> (sender_user_id IS NULL OR sender_user_id != excludeUserId)
   if (excludeUserId) {
-    query = query.or(
-      `sender_user_id.is.null,sender_user_id.neq.${excludeUserId}`
-    );
+    query = query.or(`sender_user_id.is.null,sender_user_id.neq.${excludeUserId}`);
   }
 
   const { data, error } = await query;
@@ -149,18 +159,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const {
-      groupId,
-      raidId,
-      bossName,
-      battleName,
-      hpValue,
-      hpPercent,
-      userName,
-      memberCurrent,
-      memberMax,
-      senderUserId,
-    } = body;
+    const groupId = body.groupId ?? body.group_id;
+    const raidId = body.raidId ?? body.raid_id;
+
+    const bossName = body.bossName ?? body.boss_name;
+    const battleName = body.battleName ?? body.battle_name;
+
+    const hpValue = body.hpValue ?? body.hp_value;
+    const hpPercent = body.hpPercent ?? body.hp_percent;
+
+    const userName = body.userName ?? body.user_name;
+    const senderUserId = body.senderUserId ?? body.sender_user_id;
+
+    const memberCurrent = body.memberCurrent ?? body.member_current;
+    const memberMax = body.memberMax ?? body.member_max;
 
     if (!groupId || !raidId) {
       return NextResponse.json(
@@ -178,10 +190,7 @@ export async function POST(req: NextRequest) {
         raidId,
         bossName
       );
-      return NextResponse.json(
-        { ok: true, blocked: true },
-        { status: 200 }
-      );
+      return NextResponse.json({ ok: true, blocked: true }, { status: 200 });
     }
 
     // ===== 重複チェック（同じ group_id + raid_id が既にある場合はスキップ）=====
@@ -194,40 +203,32 @@ export async function POST(req: NextRequest) {
 
     if (selectError) {
       console.error("select existing error", selectError);
-      return NextResponse.json(
-        { error: selectError.message },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: selectError.message }, { status: 500 });
     }
 
     if (existing) {
       console.log("[POST /api/raids] duplicate raid id", { groupId, raidId });
-      return NextResponse.json(
-        { ok: true, duplicated: true },
-        { status: 200 }
-      );
+      return NextResponse.json({ ok: true, duplicated: true }, { status: 200 });
     }
 
-    const { error: insertError } = await supabase.from("raids").insert({
+    const insertRow = {
       group_id: groupId,
       raid_id: raidId,
       boss_name: bossName ?? null,
-      hp_value:
-        hpValue !== undefined && hpValue !== null ? Number(hpValue) : null,
-      hp_percent:
-        hpPercent !== undefined && hpPercent !== null
-          ? Number(hpPercent)
-          : null,
+      battle_name: battleName ?? null,
+      hp_value: toNumberOrNull(hpValue),
+      hp_percent: toNumberOrNull(hpPercent),
+      member_current: toIntOrNull(memberCurrent),
+      member_max: toIntOrNull(memberMax),
       user_name: userName ?? null,
       sender_user_id: senderUserId ?? null,
-    });
+    };
+
+    const { error: insertError } = await supabase.from("raids").insert(insertRow);
 
     if (insertError) {
       console.error("insert error", insertError);
-      return NextResponse.json(
-        { error: insertError.message },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: insertError.message }, { status: 500 });
     }
 
     console.log("[POST /api/raids] inserted", {
@@ -235,14 +236,13 @@ export async function POST(req: NextRequest) {
       raidId,
       bossName,
       senderUserId,
+      member_current: insertRow.member_current,
+      member_max: insertRow.member_max,
     });
 
     return NextResponse.json({ ok: true }, { status: 200 });
   } catch (e) {
     console.error("POST /api/raids error", e);
-    return NextResponse.json(
-      { error: "Unexpected error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
   }
 }
