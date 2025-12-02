@@ -8,14 +8,16 @@ import { useBattleNameMap } from "@/lib/useBattleNameMap";
 
 type RaidRow = {
   id: string;
-  group_id: string;
-  raid_id: string;
-  boss_name: string | null;
-  battle_name: string | null;
-  hp_value: number | null;
-  hp_percent: number | null;
-  user_name: string | null;
-  created_at: string;
+  groupId: string;
+  raidId: string;
+  bossName: string | null;
+  battleName: string | null;
+  hpValue: number | null;
+  hpPercent: number | null;
+  userName: string | null;
+  createdAt: string;
+  memberCurrent: number | null;
+  memberMax: number | null;
 };
 
 const looksLikeUrl = (s: string | null | undefined): boolean =>
@@ -86,6 +88,7 @@ export default function GroupPage() {
         return;
       }
 
+      // route.ts 側で camelCase に整形済み
       const json = await res.json();
       const data: RaidRow[] = Array.isArray(json)
         ? json
@@ -186,8 +189,8 @@ export default function GroupPage() {
   }, [raids, lastNotifiedId, playNotifySound]);
 
   const getDisplayName = (raid: RaidRow): string => {
-    const boss = raid.boss_name?.trim() || "";
-    const battle = raid.battle_name?.trim() || "";
+    const boss = raid.bossName?.trim() || "";
+    const battle = raid.battleName?.trim() || "";
 
     if (boss && !looksLikeUrl(boss)) return boss;
     if (battle && !looksLikeUrl(battle)) return battle;
@@ -195,11 +198,11 @@ export default function GroupPage() {
   };
 
   const getImageUrl = (raid: RaidRow): string | undefined => {
-    if (looksLikeUrl(raid.battle_name)) {
-      return raid.battle_name as string;
+    if (looksLikeUrl(raid.battleName)) {
+      return raid.battleName as string;
     }
-    if (looksLikeUrl(raid.boss_name)) {
-      return raid.boss_name as string;
+    if (looksLikeUrl(raid.bossName)) {
+      return raid.bossName as string;
     }
     const name = getDisplayName(raid);
     return battleMap[name];
@@ -254,10 +257,10 @@ export default function GroupPage() {
 
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard
-          .writeText(target.raid_id)
+          .writeText(target.raidId)
           .then(() => {
             setLastAutoCopiedRaidId(target.id);
-            setCopyMessage(`ID ${target.raid_id} をコピーしました`);
+            setCopyMessage(`ID ${target.raidId} をコピーしました`);
             setTimeout(() => setCopyMessage(null), 1500);
           })
           .catch((err) => {
@@ -371,17 +374,22 @@ export default function GroupPage() {
         ) : (
           <div className="space-y-2">
             {filteredRaids.map((raid) => {
-              const created = new Date(raid.created_at);
+              const created = new Date(raid.createdAt);
               const timeAgo = formatTimeAgo(created);
 
               const labelName = getDisplayName(raid);
               const imageUrl = getImageUrl(raid);
 
               let hpText = "HP 不明";
-              if (raid.hp_value != null && raid.hp_percent != null) {
+              if (raid.hpValue != null && raid.hpPercent != null) {
                 hpText = `${formatNumberWithComma(
-                  raid.hp_value
-                )} HP (${raid.hp_percent.toFixed(1)}%)`;
+                  raid.hpValue
+                )} HP (${raid.hpPercent.toFixed(1)}%)`;
+              }
+
+              let memberText = "";
+              if (raid.memberCurrent != null && raid.memberMax != null) {
+                memberText = `参戦者: ${raid.memberCurrent}/${raid.memberMax}`;
               }
 
               const isAutoCopied = raid.id === lastAutoCopiedRaidId;
@@ -389,7 +397,7 @@ export default function GroupPage() {
               return (
                 <div
                   key={raid.id}
-                  onClick={() => copyId(raid.raid_id)}
+                  onClick={() => copyId(raid.raidId)}
                   className={
                     "flex items-center justify-between bg-slate-800/80 rounded-lg px-3 py-2 text-sm shadow cursor-pointer hover:bg-slate-700/80 transition-colors" +
                     (isAutoCopied ? " ring-2 ring-emerald-400" : "")
@@ -407,7 +415,7 @@ export default function GroupPage() {
                     <div className="flex flex-col">
                       <div className="flex items-center gap-2">
                         <span className="font-mono text-base underline decoration-dotted">
-                          {raid.raid_id}
+                          {raid.raidId}
                         </span>
                         <span className="text-xs text-slate-400">
                           {timeAgo}
@@ -421,9 +429,14 @@ export default function GroupPage() {
 
                   <div className="flex flex-col items-end gap-1">
                     <div className="text-xs text-slate-300">
-                      {raid.user_name ?? "匿名"}
+                      {raid.userName ?? "匿名"}
                     </div>
                     <div className="text-xs text-slate-400">{hpText}</div>
+                    {memberText && (
+                      <div className="text-xs text-slate-400">
+                        {memberText}
+                      </div>
+                    )}
                   </div>
                 </div>
               );
