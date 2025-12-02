@@ -128,8 +128,13 @@ export async function GET(req: NextRequest) {
   if (bossName) {
     query = query.eq("boss_name", bossName);
   }
+
+  // ★ 自分のIDだけ除外したいが、sender_user_id が NULL のレコードは表示したい
+  // -> (sender_user_id IS NULL OR sender_user_id != excludeUserId)
   if (excludeUserId) {
-    query = query.neq("sender_user_id", excludeUserId);
+    query = query.or(
+      `sender_user_id.is.null,sender_user_id.neq.${excludeUserId}`
+    );
   }
 
   const { data, error } = await query;
@@ -139,7 +144,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  // 配列で返す（viewer は配列前提）
   return NextResponse.json(data ?? []);
 }
 
@@ -224,8 +228,9 @@ export async function POST(req: NextRequest) {
           : null,
       member_max:
         memberMax !== undefined && memberMax !== null
-          ? Number(memberMax) : null,
-      sender_user_id: senderUserId ?? null, // ★ ここにそのまま保存
+          ? Number(memberMax)
+          : null,
+      sender_user_id: senderUserId ?? null,
     });
 
     if (insertError) {
