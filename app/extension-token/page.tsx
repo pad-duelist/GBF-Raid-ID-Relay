@@ -31,6 +31,17 @@ export default function ExtensionTokenPage() {
   const [groupsLoading, setGroupsLoading] = useState<boolean>(false);
   const [groupsError, setGroupsError] = useState<string | null>(null);
 
+  // 🔹 ここで取得したトークンを localStorage に保存する
+  useEffect(() => {
+    if (!state.token) return;
+    try {
+      localStorage.setItem("extensionToken", state.token);
+      // console.log("extensionToken saved:", state.token);
+    } catch (e) {
+      console.error("failed to save extensionToken to localStorage", e);
+    }
+  }, [state.token]);
+
   // ログインユーザー取得
   useEffect(() => {
     const fetchUser = async () => {
@@ -261,7 +272,7 @@ export default function ExtensionTokenPage() {
       </section>
 
       <section>
-        <h2 className="mb-2 text-lg font-semibold text-white">
+        <h2 className="mb-2 text-lg font-semibold text白">
           所属グループへのリンク
         </h2>
 
