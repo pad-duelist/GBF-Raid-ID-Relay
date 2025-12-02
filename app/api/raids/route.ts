@@ -13,8 +13,6 @@ const BOSS_BLOCKLIST_CSV_URL =
   process.env.BOSS_BLOCKLIST_CSV_URL ??
   process.env.NEXT_PUBLIC_BOSS_BLOCKLIST_CSV_URL;
 
-console.log("[env debug] BOSS_BLOCKLIST_CSV_URL =", BOSS_BLOCKLIST_CSV_URL);
-
 let bossBlockList: Set<string> | null = null;
 let lastBossBlockListFetched = 0;
 const BOSS_BLOCKLIST_TTL = 5 * 60 * 1000; // 5分
@@ -43,11 +41,14 @@ async function loadBossBlockList(): Promise<Set<string>> {
     console.log("[boss blocklist] fetching from", BOSS_BLOCKLIST_CSV_URL);
     const res = await fetch(BOSS_BLOCKLIST_CSV_URL);
     if (!res.ok) {
-      console.error("[boss blocklist] fetch failed:", res.status, res.statusText);
+      console.error(
+        "[boss blocklist] fetch failed:",
+        res.status,
+        res.statusText
+      );
     } else {
       const text = await res.text();
       const lines = text.split(/\r?\n/);
-
       // 1行目はヘッダー boss_name
       for (let i = 1; i < lines.length; i++) {
         const line = lines[i].trim();
@@ -58,6 +59,7 @@ async function loadBossBlockList(): Promise<Set<string>> {
           set.add(normalizeBossName(bossName));
         }
       }
+
       console.log(
         "[boss blocklist] loaded names:",
         Array.from(set.values())
@@ -72,7 +74,9 @@ async function loadBossBlockList(): Promise<Set<string>> {
   return set;
 }
 
-async function isBlockedBoss(bossName: string | null | undefined): Promise<boolean> {
+async function isBlockedBoss(
+  bossName: string | null | undefined
+): Promise<boolean> {
   if (!bossName) return false;
   const list = await loadBossBlockList();
   const normalized = normalizeBossName(bossName);
@@ -81,39 +85,14 @@ async function isBlockedBoss(bossName: string | null | undefined): Promise<boole
   return blocked;
 }
 
-// ===== トークン -> user_id 解決 =====
-async function resolveUserIdFromToken(
-  token: string | null | undefined
-): Promise<string | null> {
-  if (!token) return null;
-  const trimmed = token.trim();
-  if (!trimmed) return null;
-
-  const { data, error } = await supabase
-    .from("extension_tokens")
-    .select("user_id")
-    .eq("token", trimmed)
-    .maybeSingle();
-
-  if (error) {
-    console.error("[token] resolve error", error);
-    return null;
-  }
-  if (!data) {
-    console.warn("[token] not found for token");
-    return null;
-  }
-  return data.user_id as string;
-}
-
 // -------- GET /api/raids --------
-// 例: /api/raids?groupId=friends1&limit=50&excludeToken=xxxx
+// 例: /api/raids?groupId=friends1&limit=50&excludeUserId=xxxx
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const groupId = searchParams.get("groupId");
   const bossName = searchParams.get("bossName");
   const limitParam = searchParams.get("limit") ?? "50";
-  const excludeToken = searchParams.get("excludeToken");
+  const excludeUserId = searchParams.get("excludeUserId");
 
   const limit = Number(limitParam);
 
@@ -122,11 +101,6 @@ export async function GET(req: NextRequest) {
       { error: "groupId is required" },
       { status: 400 }
     );
-  }
-
-  let excludeUserId: string | null = null;
-  if (excludeToken) {
-    excludeUserId = await resolveUserIdFromToken(excludeToken);
   }
 
   let query = supabase
@@ -165,7 +139,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  // 互換性のため、配列で返す（page.tsx は配列前提）
+  // 配列で返す（viewer は配列前提）
   return NextResponse.json(data ?? []);
 }
 
@@ -184,7 +158,7 @@ export async function POST(req: NextRequest) {
       userName,
       memberCurrent,
       memberMax,
-      token,
+      senderUserId,
     }: {
       groupId?: string;
       raidId?: string;
@@ -195,7 +169,7 @@ export async function POST(req: NextRequest) {
       userName?: string | null;
       memberCurrent?: number | null;
       memberMax?: number | null;
-      token?: string | null;
+      senderUserId?: string | null;
     } = body;
 
     if (!groupId || !raidId) {
@@ -210,9 +184,6 @@ export async function POST(req: NextRequest) {
       console.log("[boss blocklist] skip insert", { groupId, raidId, bossName });
       return NextResponse.json({ ok: true, blocked: true }, { status: 200 });
     }
-
-    // token -> sender_user_id
-    const senderUserId = await resolveUserIdFromToken(token ?? null);
 
     // 同一 groupId & raidId が既にあれば重複スキップ
     const { data: existing, error: selectError } = await supabase
@@ -253,9 +224,8 @@ export async function POST(req: NextRequest) {
           : null,
       member_max:
         memberMax !== undefined && memberMax !== null
-          ? Number(memberMax)
-          : null,
-      sender_user_id: senderUserId ?? null, // ★ ここで保存
+          ? Number(memberMax) : null,
+      sender_user_id: senderUserId ?? null, // ★ ここにそのまま保存
     });
 
     if (insertError) {

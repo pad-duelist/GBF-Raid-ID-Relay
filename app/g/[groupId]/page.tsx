@@ -18,7 +18,6 @@ type RaidRow = {
   created_at: string;
 };
 
-// URL 判定（battle_name / boss_name のどちらかが URL の場合もケア）
 const looksLikeUrl = (s: string | null | undefined): boolean =>
   !!s && /^https?:\/\//.test(s);
 
@@ -31,11 +30,9 @@ export default function GroupPage() {
   const [bossFilter, setBossFilter] = useState<string>("");
   const [copyMessage, setCopyMessage] = useState<string | null>(null);
 
-  // 🔔 新着ID用: 最後に通知したレコードID
   const [lastNotifiedId, setLastNotifiedId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // ★ スプレッドシートの対応表（boss_name → 画像URL）
   const battleMap = useBattleNameMap();
 
   const fetchRaids = async () => {
@@ -46,17 +43,14 @@ export default function GroupPage() {
     }
 
     try {
-      // ★ 自分のトークンを localStorage から取得
-      //   extension-token ページなどで:
-      //   localStorage.setItem("extensionToken", token)
-      //   しておく想定
-      let token: string | null = null;
+      // ★ 自分のユーザーIDを localStorage から取得
+      let userId: string | null = null;
       try {
         if (typeof window !== "undefined") {
-          token = localStorage.getItem("extensionToken");
+          userId = localStorage.getItem("extensionUserId");
         }
       } catch {
-        token = null;
+        userId = null;
       }
 
       const query = new URLSearchParams({
@@ -64,9 +58,9 @@ export default function GroupPage() {
         limit: "50",
       });
 
-      // 自分のトークンがあれば、そのトークンに紐づくIDをサーバー側で除外してもらう
-      if (token && token.trim().length > 0) {
-        query.set("excludeToken", token.trim());
+      // 自分のユーザーIDがあれば、それを除外条件として渡す
+      if (userId && userId.trim().length > 0) {
+        query.set("excludeUserId", userId.trim());
       }
 
       const res = await fetch(`/api/raids?${query.toString()}`, {
@@ -79,10 +73,6 @@ export default function GroupPage() {
       }
 
       const json = await res.json();
-
-      // 互換性のため:
-      // - 旧実装: 直接配列が返ってくる
-      // - 新実装: { raids: RaidRow[] } が返ってくる
       const data: RaidRow[] = Array.isArray(json)
         ? json
         : (json.raids as RaidRow[]) ?? [];
@@ -99,7 +89,6 @@ export default function GroupPage() {
   useEffect(() => {
     setLoading(true);
     fetchRaids();
-    // ✅ 1秒ごとの自動更新
     const timer = setInterval(fetchRaids, 1000);
     return () => clearInterval(timer);
   }, [groupId]);
@@ -114,35 +103,30 @@ export default function GroupPage() {
     }
   }
 
-  // 🔔 効果音の読み込み（初回のみ）
   useEffect(() => {
     audioRef.current = new Audio("/notify.mp3");
   }, []);
 
-  // 🔔 新しいIDが流れたときに音を鳴らす
   useEffect(() => {
     if (!raids || raids.length === 0) return;
 
-    const latestRaidId = raids[0].id; // 一番新しいレコード
+    const latestRaidId = raids[0].id;
 
-    // 初回ロード時は基準だけセットして音は鳴らさない
     if (lastNotifiedId === null) {
       setLastNotifiedId(latestRaidId);
       return;
     }
 
-    // 前回と違うレコードIDなら「新しいIDが流れた」とみなす
     if (latestRaidId !== lastNotifiedId) {
       audioRef.current
         ?.play()
         .catch(() => {
-          // 自動再生制限に引っかかった場合は握りつぶす
+          /* ignore */
         });
       setLastNotifiedId(latestRaidId);
     }
   }, [raids, lastNotifiedId]);
 
-  // 表示用ボス名（URL は除外して、純粋な名前を優先）
   const getDisplayName = (raid: RaidRow): string => {
     const boss = raid.boss_name?.trim() || "";
     const battle = raid.battle_name?.trim() || "";
@@ -152,22 +136,17 @@ export default function GroupPage() {
     return "不明なマルチ";
   };
 
-  // 画像URLの決定
   const getImageUrl = (raid: RaidRow): string | undefined => {
-    // 1. battle_name が URL ならそれを優先（今のDB仕様に対応）
     if (looksLikeUrl(raid.battle_name)) {
       return raid.battle_name as string;
     }
-    // 2. boss_name が URL の場合
     if (looksLikeUrl(raid.boss_name)) {
       return raid.boss_name as string;
     }
-    // 3. どちらも URL でなければ、表示名からスプレッドシートのマップを引く
     const name = getDisplayName(raid);
     return battleMap[name];
   };
 
-  // ★ 絞り込み候補：表示名でユニーク化
   const uniqueBosses = Array.from(
     new Set(
       raids
@@ -176,7 +155,6 @@ export default function GroupPage() {
     )
   );
 
-  // ★ 表示用だけフィルタする
   const filteredRaids = bossFilter
     ? raids.filter((raid) => getDisplayName(raid) === bossFilter)
     : raids;
@@ -213,12 +191,11 @@ export default function GroupPage() {
               </select>
             </div>
 
-            {/* 🔔 自動再生制限対策用のサウンドテストボタン */}
             <button
               type="button"
               onClick={() =>
                 audioRef.current?.play().catch(() => {
-                  /* 無視 */
+                  /* ignore */
                 })
               }
               className="ml-2 bg-slate-700 hover:bg-slate-600 text-xs px-2 py-1 rounded"
@@ -260,13 +237,12 @@ export default function GroupPage() {
                   onClick={() => copyId(raid.raid_id)}
                   className="flex items-center justify-between bg-slate-800/80 rounded-lg px-3 py-2 text-sm shadow cursor-pointer hover:bg-slate-700/80 transition-colors"
                 >
-                  {/* 左側：画像＋ID＋ボス名 */}
                   <div className="flex items-center gap-3">
                     {imageUrl && (
                       <img
                         src={imageUrl}
                         alt={labelName}
-                        style={{ width: 90, height: 63 }} // 180x126 の比率で表示
+                        style={{ width: 90, height: 63 }}
                         className="rounded"
                       />
                     )}
@@ -285,7 +261,6 @@ export default function GroupPage() {
                     </div>
                   </div>
 
-                  {/* 右側：投稿者＋HP */}
                   <div className="flex flex-col items-end gap-1">
                     <div className="text-xs text-slate-300">
                       {raid.user_name ?? "匿名"}
