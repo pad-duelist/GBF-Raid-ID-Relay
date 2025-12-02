@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { formatTimeAgo } from "@/lib/timeAgo";
 import { formatNumberWithComma } from "@/lib/numberFormat";
@@ -21,6 +21,9 @@ type RaidRow = {
 const looksLikeUrl = (s: string | null | undefined): boolean =>
   !!s && /^https?:\/\//.test(s);
 
+const NOTIFY_ENABLED_KEY = "gbf-raid-notify-enabled";
+const NOTIFY_VOLUME_KEY = "gbf-raid-notify-volume";
+
 export default function GroupPage() {
   const params = useParams<{ groupId: string }>();
   const groupId = params.groupId;
@@ -32,6 +35,9 @@ export default function GroupPage() {
 
   const [lastNotifiedId, setLastNotifiedId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const [notifyEnabled, setNotifyEnabled] = useState<boolean>(true);
+  const [notifyVolume, setNotifyVolume] = useState<number>(0.7);
 
   const battleMap = useBattleNameMap();
 
@@ -103,10 +109,53 @@ export default function GroupPage() {
     }
   }
 
+  // 通知音と設定の初期化
   useEffect(() => {
+    // Audio インスタンス初期化
     audioRef.current = new Audio("/notify.mp3");
+
+    if (typeof window === "undefined") return;
+
+    const savedEnabled = window.localStorage.getItem(NOTIFY_ENABLED_KEY);
+    const savedVolume = window.localStorage.getItem(NOTIFY_VOLUME_KEY);
+
+    if (savedEnabled !== null) {
+      setNotifyEnabled(savedEnabled === "true");
+    }
+    if (savedVolume !== null) {
+      const v = Number(savedVolume);
+      if (!Number.isNaN(v) && v >= 0 && v <= 1) {
+        setNotifyVolume(v);
+      }
+    }
   }, []);
 
+  // 設定の保存
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(NOTIFY_ENABLED_KEY, String(notifyEnabled));
+    window.localStorage.setItem(NOTIFY_VOLUME_KEY, String(notifyVolume));
+  }, [notifyEnabled, notifyVolume]);
+
+  const playNotifySound = useCallback(() => {
+    if (!notifyEnabled) return;
+
+    if (!audioRef.current) {
+      audioRef.current = new Audio("/notify.mp3");
+    }
+
+    const audio = audioRef.current;
+    audio.volume = notifyVolume; // 0.0〜1.0
+    audio.currentTime = 0;
+
+    audio
+      .play()
+      .catch(() => {
+        /* ignore */
+      });
+  }, [notifyEnabled, notifyVolume]);
+
+  // 新着IDで通知音を鳴らす
   useEffect(() => {
     if (!raids || raids.length === 0) return;
 
@@ -118,14 +167,10 @@ export default function GroupPage() {
     }
 
     if (latestRaidId !== lastNotifiedId) {
-      audioRef.current
-        ?.play()
-        .catch(() => {
-          /* ignore */
-        });
+      playNotifySound();
       setLastNotifiedId(latestRaidId);
     }
-  }, [raids, lastNotifiedId]);
+  }, [raids, lastNotifiedId, playNotifySound]);
 
   const getDisplayName = (raid: RaidRow): string => {
     const boss = raid.boss_name?.trim() || "";
@@ -172,36 +217,66 @@ export default function GroupPage() {
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
-            <div className="flex flex-col gap-1">
-              <label className="text-xs sm:text-sm text-slate-300">
-                マルチ絞り込み
-              </label>
-              <select
-                className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs sm:text-sm"
-                value={bossFilter}
-                onChange={(e) => setBossFilter(e.target.value)}
+          <div className="flex flex-col gap-2 sm:items-end">
+            <div className="flex items-center gap-2">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs sm:text-sm text-slate-300">
+                  マルチ絞り込み
+                </label>
+                <select
+                  className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs sm:text-sm"
+                  value={bossFilter}
+                  onChange={(e) => setBossFilter(e.target.value)}
+                >
+                  <option value="">すべて</option>
+                  {uniqueBosses.map((boss) => (
+                    <option key={boss} value={boss}>
+                      {boss}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => playNotifySound()}
+                className="ml-2 bg-slate-700 hover:bg-slate-600 text-xs px-2 py-1 rounded"
               >
-                <option value="">すべて</option>
-                {uniqueBosses.map((boss) => (
-                  <option key={boss} value={boss}>
-                    {boss}
-                  </option>
-                ))}
-              </select>
+                音テスト
+              </button>
             </div>
 
-            <button
-              type="button"
-              onClick={() =>
-                audioRef.current?.play().catch(() => {
-                  /* ignore */
-                })
-              }
-              className="ml-2 bg-slate-700 hover:bg-slate-600 text-xs px-2 py-1 rounded"
-            >
-              音テスト
-            </button>
+            {/* 通知音設定 */}
+            <div className="flex items-center gap-3 text-xs sm:text-sm">
+              <label className="inline-flex items-center gap-1 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={notifyEnabled}
+                  onChange={(e) => setNotifyEnabled(e.target.checked)}
+                />
+                <span>通知音</span>
+              </label>
+
+              <div className="flex items-center gap-2">
+                <span className="whitespace-nowrap">音量</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={Math.round(notifyVolume * 100)}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    const normalized =
+                      Math.min(100, Math.max(0, v)) / 100;
+                    setNotifyVolume(normalized);
+                  }}
+                />
+                <span className="w-10 text-right">
+                  {Math.round(notifyVolume * 100)}%
+                </span>
+              </div>
+            </div>
           </div>
         </header>
 
