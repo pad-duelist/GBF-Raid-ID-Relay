@@ -39,6 +39,12 @@ export default function GroupPage() {
   const [notifyEnabled, setNotifyEnabled] = useState<boolean>(true);
   const [notifyVolume, setNotifyVolume] = useState<number>(0.7);
 
+  // ★ 自動コピー用
+  const [lastAutoCopiedRaidId, setLastAutoCopiedRaidId] = useState<string | null>(null);
+  const seenFilteredRaidIdsRef = useRef<Set<string>>(new Set());
+  const autoCopyInitializedRef = useRef<boolean>(false);
+  const prevBossFilterRef = useRef<string>("");
+
   const battleMap = useBattleNameMap();
 
   const fetchRaids = async () => {
@@ -155,7 +161,7 @@ export default function GroupPage() {
       });
   }, [notifyEnabled, notifyVolume]);
 
-  // 新着IDで通知音を鳴らす
+  // 新着IDで通知音を鳴らす（全体の最新ID）
   useEffect(() => {
     if (!raids || raids.length === 0) return;
 
@@ -204,6 +210,56 @@ export default function GroupPage() {
     ? raids.filter((raid) => getDisplayName(raid) === bossFilter)
     : raids;
 
+  // ★ 絞り込み後の新着IDを自動コピー
+  useEffect(() => {
+    // 絞り込み後の配列が空なら初期化だけ
+    if (!filteredRaids || filteredRaids.length === 0) {
+      seenFilteredRaidIdsRef.current = new Set();
+      return;
+    }
+
+    const currentIds = new Set(filteredRaids.map((r) => r.id));
+
+    // 絞り込み条件が変わった直後は、その時点の一覧を既知として扱い、
+    // 過去のIDは自動コピーしない
+    const bossFilterChanged = bossFilter !== prevBossFilterRef.current;
+    prevBossFilterRef.current = bossFilter;
+
+    if (!autoCopyInitializedRef.current || bossFilterChanged) {
+      seenFilteredRaidIdsRef.current = currentIds;
+      autoCopyInitializedRef.current = true;
+      return;
+    }
+
+    // 以前見ていなかった ID = 新しく絞り込み結果に入ってきた ID
+    const newlyAdded = filteredRaids.filter(
+      (raid) => !seenFilteredRaidIdsRef.current.has(raid.id)
+    );
+
+    if (newlyAdded.length > 0) {
+      // 一番新しいもの（一覧は新しい順の想定なので先頭）をコピー
+      const target = newlyAdded[0];
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard
+          .writeText(target.raid_id)
+          .then(() => {
+            setLastAutoCopiedRaidId(target.id);
+            setCopyMessage(`ID ${target.raid_id} をコピーしました`);
+            setTimeout(() => setCopyMessage(null), 1500);
+          })
+          .catch((err) => {
+            console.error("自動コピーに失敗しました:", err);
+          });
+      } else {
+        console.warn("Clipboard API が利用できません。");
+      }
+    }
+
+    // 今回の一覧を「既知」として保存
+    seenFilteredRaidIdsRef.current = currentIds;
+  }, [filteredRaids, bossFilter]);
+
   return (
     <div className="min-h-screen bg-slate-900 text-slate-50 p-4">
       <div className="max-w-3xl mx-auto space-y-4">
@@ -213,7 +269,7 @@ export default function GroupPage() {
               参戦ID共有ビューア - グループ: {groupId}
             </h1>
             <p className="text-sm text-slate-400">
-              1秒ごとに自動更新 / クリックでIDコピー
+              1秒ごとに自動更新 / クリックでIDコピー / 新着IDは自動コピー
             </p>
           </div>
 
@@ -306,11 +362,16 @@ export default function GroupPage() {
                 )} HP (${raid.hp_percent.toFixed(1)}%)`;
               }
 
+              const isAutoCopied = raid.id === lastAutoCopiedRaidId;
+
               return (
                 <div
                   key={raid.id}
                   onClick={() => copyId(raid.raid_id)}
-                  className="flex items-center justify-between bg-slate-800/80 rounded-lg px-3 py-2 text-sm shadow cursor-pointer hover:bg-slate-700/80 transition-colors"
+                  className={
+                    "flex items-center justify-between bg-slate-800/80 rounded-lg px-3 py-2 text-sm shadow cursor-pointer hover:bg-slate-700/80 transition-colors" +
+                    (isAutoCopied ? " ring-2 ring-emerald-400" : "")
+                  }
                 >
                   <div className="flex items-center gap-3">
                     {imageUrl && (
