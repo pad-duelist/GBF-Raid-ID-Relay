@@ -31,39 +31,31 @@ async function loadBossBlockList(): Promise<Set<string>> {
   const set = new Set<string>();
 
   if (!BOSS_BLOCKLIST_CSV_URL) {
-    console.warn("[boss blocklist] BOSS_BLOCKLIST_CSV_URL が設定されていません");
     bossBlockList = set;
     lastBossBlockListFetched = now;
     return set;
   }
 
   try {
-    console.log("[boss blocklist] fetching from", BOSS_BLOCKLIST_CSV_URL);
-    const res = await fetch(BOSS_BLOCKLIST_CSV_URL);
-    if (!res.ok) {
+    const response = await fetch(BOSS_BLOCKLIST_CSV_URL);
+    if (!response.ok) {
       console.error(
-        "[boss blocklist] fetch failed:",
-        res.status,
-        res.statusText
+        "[boss blocklist] CSV fetch failed",
+        response.status,
+        response.statusText
       );
-    } else {
-      const text = await res.text();
-      const lines = text.split(/\r?\n/);
-      // 1行目はヘッダー boss_name
-      for (let i = 1; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line) continue;
+      bossBlockList = set;
+      lastBossBlockListFetched = now;
+      return set;
+    }
 
-        const bossName = line.split(",")[0];
-        if (bossName) {
-          set.add(normalizeBossName(bossName));
-        }
-      }
+    const text = await response.text();
+    const lines = text.split(/\r?\n/);
 
-      console.log(
-        "[boss blocklist] loaded names:",
-        Array.from(set.values())
-      );
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      set.add(normalizeBossName(trimmed));
     }
   } catch (e) {
     console.error("[boss blocklist] 取得エラー", e);
@@ -79,22 +71,17 @@ async function isBlockedBoss(
 ): Promise<boolean> {
   if (!bossName) return false;
   const list = await loadBossBlockList();
-  const normalized = normalizeBossName(bossName);
-  const blocked = list.has(normalized);
-  console.log("[boss blocklist] check", { bossName, normalized, blocked });
-  return blocked;
+  return list.has(normalizeBossName(bossName));
 }
 
-// -------- GET /api/raids --------
-// 例: /api/raids?groupId=friends1&limit=50&excludeUserId=xxxx
+// ===== GET: 一覧取得 =====
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
+
   const groupId = searchParams.get("groupId");
   const bossName = searchParams.get("bossName");
-  const limitParam = searchParams.get("limit") ?? "50";
+  const limitParam = searchParams.get("limit");
   const excludeUserId = searchParams.get("excludeUserId");
-
-  const limit = Number(limitParam);
 
   if (!groupId) {
     return NextResponse.json(
@@ -111,19 +98,16 @@ export async function GET(req: NextRequest) {
         "group_id",
         "raid_id",
         "boss_name",
-        "battle_name",
         "hp_value",
         "hp_percent",
         "user_name",
         "created_at",
-        "member_current",
-        "member_max",
         "sender_user_id",
       ].join(",")
     )
     .eq("group_id", groupId)
     .order("created_at", { ascending: false })
-    .limit(isNaN(limit) ? 50 : limit);
+    .limit(isNaN(Number(limitParam)) ? 50 : Number(limitParam));
 
   if (bossName) {
     query = query.eq("boss_name", bossName);
@@ -147,10 +131,23 @@ export async function GET(req: NextRequest) {
   return NextResponse.json(data ?? []);
 }
 
-// -------- POST /api/raids --------
+// ===== POST: 1件登録 =====
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    const contentType = req.headers.get("content-type") || "";
+
+    let body: any;
+    if (contentType.includes("application/json")) {
+      body = await req.json();
+    } else if (contentType.includes("application/x-www-form-urlencoded")) {
+      const formData = await req.formData();
+      body = Object.fromEntries(formData.entries());
+    } else {
+      return NextResponse.json(
+        { error: "Unsupported content type" },
+        { status: 415 }
+      );
+    }
 
     const {
       groupId,
@@ -163,17 +160,6 @@ export async function POST(req: NextRequest) {
       memberCurrent,
       memberMax,
       senderUserId,
-    }: {
-      groupId?: string;
-      raidId?: string;
-      bossName?: string | null;
-      battleName?: string | null;
-      hpValue?: number | null;
-      hpPercent?: number | null;
-      userName?: string | null;
-      memberCurrent?: number | null;
-      memberMax?: number | null;
-      senderUserId?: string | null;
     } = body;
 
     if (!groupId || !raidId) {
@@ -183,23 +169,35 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ブロック対象ボスなら保存しない
-    if (await isBlockedBoss(bossName)) {
-      console.log("[boss blocklist] skip insert", { groupId, raidId, bossName });
-      return NextResponse.json({ ok: true, blocked: true }, { status: 200 });
+    // ===== ボスブロックリスト判定 =====
+    const blocked = await isBlockedBoss(bossName);
+    if (blocked) {
+      console.log(
+        "[POST /api/raids] blocked boss, skip insert",
+        groupId,
+        raidId,
+        bossName
+      );
+      return NextResponse.json(
+        { ok: true, blocked: true },
+        { status: 200 }
+      );
     }
 
-    // 同一 groupId & raidId が既にあれば重複スキップ
+    // ===== 重複チェック（同じ group_id + raid_id が既にある場合はスキップ）=====
     const { data: existing, error: selectError } = await supabase
       .from("raids")
       .select("id")
       .eq("group_id", groupId)
       .eq("raid_id", raidId)
-      .limit(1)
       .maybeSingle();
 
-    if (selectError && selectError.code !== "PGRST116") {
-      console.error("select error", selectError);
+    if (selectError) {
+      console.error("select existing error", selectError);
+      return NextResponse.json(
+        { error: selectError.message },
+        { status: 500 }
+      );
     }
 
     if (existing) {
@@ -214,7 +212,6 @@ export async function POST(req: NextRequest) {
       group_id: groupId,
       raid_id: raidId,
       boss_name: bossName ?? null,
-      battle_name: battleName ?? null,
       hp_value:
         hpValue !== undefined && hpValue !== null ? Number(hpValue) : null,
       hp_percent:
@@ -222,14 +219,6 @@ export async function POST(req: NextRequest) {
           ? Number(hpPercent)
           : null,
       user_name: userName ?? null,
-      member_current:
-        memberCurrent !== undefined && memberCurrent !== null
-          ? Number(memberCurrent)
-          : null,
-      member_max:
-        memberMax !== undefined && memberMax !== null
-          ? Number(memberMax)
-          : null,
       sender_user_id: senderUserId ?? null,
     });
 
