@@ -14,8 +14,8 @@ type RaidRow = {
   battle_name: string | null;
   hp_value: number | null;
   hp_percent: number | null;
-  member_current: number | null; // ★ 追加
-  member_max: number | null;     // ★ 追加
+  member_current: number | null; // 追加
+  member_max: number | null;     // 追加
   user_name: string | null;
   created_at: string;
 };
@@ -42,7 +42,7 @@ export default function GroupPage() {
   const [notifyEnabled, setNotifyEnabled] = useState<boolean>(true);
   const [notifyVolume, setNotifyVolume] = useState<number>(0.7);
 
-  // 自動コピー関連
+  // ★ 自動コピー関連
   const [autoCopyEnabled, setAutoCopyEnabled] = useState<boolean>(true);
   const [lastAutoCopiedRaidId, setLastAutoCopiedRaidId] = useState<string | null>(null);
   const seenFilteredRaidIdsRef = useRef<Set<string>>(new Set());
@@ -59,32 +59,43 @@ export default function GroupPage() {
     }
 
     try {
+      // 自分のユーザーIDを localStorage から取得
       let userId: string | null = null;
       try {
-        userId = localStorage.getItem("extensionUserId");
-      } catch {}
+        if (typeof window !== "undefined") {
+          userId = localStorage.getItem("extensionUserId");
+        }
+      } catch {
+        userId = null;
+      }
 
       const query = new URLSearchParams({
         groupId: String(groupId),
         limit: "50",
       });
 
-      if (userId) {
-        query.set("excludeUserId", userId);
+      // 自分のユーザーIDがあれば、それを除外条件として渡す
+      if (userId && userId.trim().length > 0) {
+        query.set("excludeUserId", userId.trim());
       }
 
       const res = await fetch(`/api/raids?${query.toString()}`, {
         cache: "no-store",
       });
-
       if (!res.ok) {
+        console.error("failed to fetch raids", res.status);
         setRaids([]);
         return;
       }
 
       const json = await res.json();
-      setRaids(Array.isArray(json) ? json : []);
-    } catch {
+      const data: RaidRow[] = Array.isArray(json)
+        ? json
+        : (json.raids as RaidRow[]) ?? [];
+
+      setRaids(data);
+    } catch (e) {
+      console.error("fetchRaids error", e);
       setRaids([]);
     } finally {
       setLoading(false);
@@ -92,69 +103,263 @@ export default function GroupPage() {
   };
 
   useEffect(() => {
+    setLoading(true);
     fetchRaids();
     const timer = setInterval(fetchRaids, 1000);
     return () => clearInterval(timer);
   }, [groupId]);
 
   async function copyId(id: string) {
-    await navigator.clipboard.writeText(id);
-    setCopyMessage(`ID ${id} をコピーしました`);
-    setTimeout(() => setCopyMessage(null), 1500);
+    try {
+      await navigator.clipboard.writeText(id);
+      setCopyMessage(`ID ${id} をコピーしました`);
+      setTimeout(() => setCopyMessage(null), 1500);
+    } catch (e) {
+      console.error(e);
+    }
   }
 
+  // 通知音＆各種設定の初期化
   useEffect(() => {
+    // Audio インスタンス初期化
     audioRef.current = new Audio("/notify.mp3");
 
-    const e = localStorage.getItem(NOTIFY_ENABLED_KEY);
-    const v = localStorage.getItem(NOTIFY_VOLUME_KEY);
-    const a = localStorage.getItem(AUTO_COPY_ENABLED_KEY);
+    if (typeof window === "undefined") return;
 
-    if (e !== null) setNotifyEnabled(e === "true");
-    if (v !== null) setNotifyVolume(Number(v));
-    if (a !== null) setAutoCopyEnabled(a === "true");
+    const savedEnabled = window.localStorage.getItem(NOTIFY_ENABLED_KEY);
+    const savedVolume = window.localStorage.getItem(NOTIFY_VOLUME_KEY);
+    const savedAutoCopy = window.localStorage.getItem(AUTO_COPY_ENABLED_KEY);
+
+    if (savedEnabled !== null) {
+      setNotifyEnabled(savedEnabled === "true");
+    }
+    if (savedVolume !== null) {
+      const v = Number(savedVolume);
+      if (!Number.isNaN(v) && v >= 0 && v <= 1) {
+        setNotifyVolume(v);
+      }
+    }
+    if (savedAutoCopy !== null) {
+      setAutoCopyEnabled(savedAutoCopy === "true");
+    }
   }, []);
 
+  // 設定の保存
   useEffect(() => {
-    localStorage.setItem(NOTIFY_ENABLED_KEY, String(notifyEnabled));
-    localStorage.setItem(NOTIFY_VOLUME_KEY, String(notifyVolume));
-    localStorage.setItem(AUTO_COPY_ENABLED_KEY, String(autoCopyEnabled));
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(NOTIFY_ENABLED_KEY, String(notifyEnabled));
+    window.localStorage.setItem(NOTIFY_VOLUME_KEY, String(notifyVolume));
+    window.localStorage.setItem(AUTO_COPY_ENABLED_KEY, String(autoCopyEnabled));
   }, [notifyEnabled, notifyVolume, autoCopyEnabled]);
 
   const playNotifySound = useCallback(() => {
     if (!notifyEnabled) return;
-    if (!audioRef.current) audioRef.current = new Audio("/notify.mp3");
-    audioRef.current.volume = notifyVolume;
-    audioRef.current.currentTime = 0;
-    audioRef.current.play().catch(() => {});
+
+    if (!audioRef.current) {
+      audioRef.current = new Audio("/notify.mp3");
+    }
+
+    const audio = audioRef.current;
+    audio.volume = notifyVolume; // 0.0〜1.0
+    audio.currentTime = 0;
+
+    audio
+      .play()
+      .catch(() => {
+        /* ignore */
+      });
   }, [notifyEnabled, notifyVolume]);
 
+  // 新着IDで通知音を鳴らす（全体の最新ID）
   useEffect(() => {
-    if (raids.length === 0) return;
-    const latest = raids[0].id;
-    if (lastNotifiedId && latest !== lastNotifiedId) playNotifySound();
-    setLastNotifiedId(latest);
+    if (!raids || raids.length === 0) return;
+
+    const latestRaidId = raids[0].id;
+
+    if (lastNotifiedId === null) {
+      setLastNotifiedId(latestRaidId);
+      return;
+    }
+
+    if (latestRaidId !== lastNotifiedId) {
+      playNotifySound();
+      setLastNotifiedId(latestRaidId);
+    }
   }, [raids, lastNotifiedId, playNotifySound]);
 
   const getDisplayName = (raid: RaidRow): string => {
-    if (raid.boss_name && !looksLikeUrl(raid.boss_name)) return raid.boss_name;
-    if (raid.battle_name && !looksLikeUrl(raid.battle_name)) return raid.battle_name;
+    const boss = raid.boss_name?.trim() || "";
+    const battle = raid.battle_name?.trim() || "";
+
+    if (boss && !looksLikeUrl(boss)) return boss;
+    if (battle && !looksLikeUrl(battle)) return battle;
     return "不明なマルチ";
   };
 
   const getImageUrl = (raid: RaidRow): string | undefined => {
-    if (looksLikeUrl(raid.battle_name)) return raid.battle_name!;
-    if (looksLikeUrl(raid.boss_name)) return raid.boss_name!;
-    return battleMap[getDisplayName(raid)];
+    if (looksLikeUrl(raid.battle_name)) {
+      return raid.battle_name as string;
+    }
+    if (looksLikeUrl(raid.boss_name)) {
+      return raid.boss_name as string;
+    }
+    const name = getDisplayName(raid);
+    return battleMap[name];
   };
 
+  const uniqueBosses = Array.from(
+    new Set(
+      raids
+        .map((r) => getDisplayName(r))
+        .filter((v) => v && v !== "不明なマルチ")
+    )
+  );
+
   const filteredRaids = bossFilter
-    ? raids.filter((r) => getDisplayName(r) === bossFilter)
+    ? raids.filter((raid) => getDisplayName(raid) === bossFilter)
     : raids;
+
+  // ★ 絞り込み後の新着IDを自動コピー（オンのときのみ）
+  useEffect(() => {
+    // 絞り込み後の配列が空なら初期化だけ
+    if (!filteredRaids || filteredRaids.length === 0) {
+      seenFilteredRaidIdsRef.current = new Set();
+      return;
+    }
+
+    const currentIds = new Set(filteredRaids.map((r) => r.id));
+
+    // 絞り込み条件が変わった直後は、その時点の一覧を既知として扱う
+    const bossFilterChanged = bossFilter !== prevBossFilterRef.current;
+    prevBossFilterRef.current = bossFilter;
+
+    if (!autoCopyInitializedRef.current || bossFilterChanged) {
+      seenFilteredRaidIdsRef.current = currentIds;
+      autoCopyInitializedRef.current = true;
+      return;
+    }
+
+    // 自動コピーOFFのときはコピーせずに既知IDだけ更新
+    if (!autoCopyEnabled) {
+      seenFilteredRaidIdsRef.current = currentIds;
+      return;
+    }
+
+    // 以前見ていなかった ID = 新しく絞り込み結果に入ってきた ID
+    const newlyAdded = filteredRaids.filter(
+      (raid) => !seenFilteredRaidIdsRef.current.has(raid.id)
+    );
+
+    if (newlyAdded.length > 0) {
+      // 一番新しいもの（一覧は新しい順の想定なので先頭）をコピー
+      const target = newlyAdded[0];
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard
+          .writeText(target.raid_id)
+          .then(() => {
+            setLastAutoCopiedRaidId(target.id);
+            setCopyMessage(`ID ${target.raid_id} をコピーしました`);
+            setTimeout(() => setCopyMessage(null), 1500);
+          })
+          .catch((err) => {
+            console.error("自動コピーに失敗しました:", err);
+          });
+      } else {
+        console.warn("Clipboard API が利用できません。");
+      }
+    }
+
+    // 今回の一覧を「既知」として保存
+    seenFilteredRaidIdsRef.current = currentIds;
+  }, [filteredRaids, bossFilter, autoCopyEnabled]);
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-50 p-4">
-      <div className="max-w-3xl mx-auto space-y-3">
+      <div className="max-w-3xl mx-auto space-y-4">
+        <header className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="text-xl font-bold">
+              参戦ID共有ビューア - グループ: {groupId}
+            </h1>
+            <p className="text-sm text-slate-400">
+              1秒ごとに自動更新 / クリックでIDコピー / 新着IDの自動コピー対応
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-2 sm:items-end">
+            <div className="flex items-center gap-2">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs sm:text-sm text-slate-300">
+                  マルチ絞り込み
+                </label>
+                <select
+                  className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs sm:text-sm"
+                  value={bossFilter}
+                  onChange={(e) => setBossFilter(e.target.value)}
+                >
+                  <option value="">すべて</option>
+                  {uniqueBosses.map((boss) => (
+                    <option key={boss} value={boss}>
+                      {boss}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => playNotifySound()}
+                className="ml-2 bg-slate-700 hover:bg-slate-600 text-xs px-2 py-1 rounded"
+              >
+                音テスト
+              </button>
+            </div>
+
+            {/* 通知音設定＆自動コピー設定 */}
+            <div className="flex flex-wrap items-center gap-3 text-xs sm:text-sm">
+              <label className="inline-flex items-center gap-1 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={notifyEnabled}
+                  onChange={(e) => setNotifyEnabled(e.target.checked)}
+                />
+                <span>通知音</span>
+              </label>
+
+              <div className="flex items-center gap-2">
+                <span className="whitespace-nowrap">音量</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={Math.round(notifyVolume * 100)}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    const normalized =
+                      Math.min(100, Math.max(0, v)) / 100;
+                    setNotifyVolume(normalized);
+                  }}
+                />
+                <span className="w-10 text-right">
+                  {Math.round(notifyVolume * 100)}%
+                </span>
+              </div>
+
+              <label className="inline-flex items-center gap-1 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={autoCopyEnabled}
+                  onChange={(e) => setAutoCopyEnabled(e.target.checked)}
+                />
+                <span>自動コピー</span>
+              </label>
+            </div>
+          </div>
+        </header>
+
         {copyMessage && (
           <div className="text-sm text-emerald-300">{copyMessage}</div>
         )}
@@ -162,54 +367,79 @@ export default function GroupPage() {
         {loading ? (
           <div>読み込み中...</div>
         ) : filteredRaids.length === 0 ? (
-          <div className="text-slate-400 text-sm">まだIDが流れていません。</div>
+          <div className="text-slate-400 text-sm">
+            まだIDが流れていません。
+          </div>
         ) : (
           <div className="space-y-2">
             {filteredRaids.map((raid) => {
-              const timeAgo = formatTimeAgo(new Date(raid.created_at));
-              const label = getDisplayName(raid);
+              const created = new Date(raid.created_at);
+              const timeAgo = formatTimeAgo(created);
+
+              const labelName = getDisplayName(raid);
               const imageUrl = getImageUrl(raid);
 
-              const hpText =
-                raid.hp_value != null && raid.hp_percent != null
-                  ? `${formatNumberWithComma(raid.hp_value)} HP (${raid.hp_percent.toFixed(1)}%)`
-                  : "HP 不明";
+              let hpText = "HP 不明";
+              if (raid.hp_value != null && raid.hp_percent != null) {
+                hpText = `${formatNumberWithComma(
+                  raid.hp_value
+                )} HP (${raid.hp_percent.toFixed(1)}%)`;
+              }
 
+              // ここで参戦者数テキストを作る
               const memberText =
                 raid.member_current != null && raid.member_max != null
                   ? `${raid.member_current}/${raid.member_max}`
                   : null;
 
+              const isAutoCopied = raid.id === lastAutoCopiedRaidId;
+
               return (
                 <div
                   key={raid.id}
                   onClick={() => copyId(raid.raid_id)}
-                  className="flex justify-between items-center bg-slate-800/80 rounded-lg px-3 py-2 cursor-pointer hover:bg-slate-700"
+                  className={
+                    "flex items-center justify-between bg-slate-800/80 rounded-lg px-3 py-2 text-sm shadow cursor-pointer hover:bg-slate-700/80 transition-colors" +
+                    (isAutoCopied ? " ring-2 ring-emerald-400" : "")
+                  }
                 >
                   <div className="flex items-center gap-3">
                     {imageUrl && (
                       <img
                         src={imageUrl}
-                        alt={label}
+                        alt={labelName}
                         style={{ width: 90, height: 63 }}
                         className="rounded"
                       />
                     )}
-                    <div>
-                      <div className="font-mono underline">{raid.raid_id}</div>
-                      <div className="text-xs text-slate-400">{label}</div>
-                      <div className="text-xs text-slate-500">{timeAgo}</div>
+                    <div className="flex flex-col">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-base underline decoration-dotted">
+                          {raid.raid_id}
+                        </span>
+                        <span className="text-xs text-slate-400">
+                          {timeAgo}
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-300">
+                        {labelName}
+                      </div>
                     </div>
                   </div>
 
-                  <div className="text-right text-xs">
-                    <div>{raid.user_name ?? "匿名"}</div>
+                  <div className="flex flex-col items-end gap-1">
+                    <div className="text-xs text-slate-300">
+                      {raid.user_name ?? "匿名"}
+                    </div>
+
+                    {/* 参戦者数をここに表示 */}
                     {memberText && (
-                      <div className="font-mono text-slate-200">
+                      <div className="text-xs font-mono text-slate-200">
                         {memberText}
                       </div>
                     )}
-                    <div className="text-slate-400">{hpText}</div>
+
+                    <div className="text-xs text-slate-400">{hpText}</div>
                   </div>
                 </div>
               );
