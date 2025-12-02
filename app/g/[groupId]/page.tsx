@@ -23,6 +23,7 @@ const looksLikeUrl = (s: string | null | undefined): boolean =>
 
 const NOTIFY_ENABLED_KEY = "gbf-raid-notify-enabled";
 const NOTIFY_VOLUME_KEY = "gbf-raid-notify-volume";
+const AUTO_COPY_ENABLED_KEY = "gbf-raid-auto-copy-enabled";
 
 export default function GroupPage() {
   const params = useParams<{ groupId: string }>();
@@ -39,7 +40,8 @@ export default function GroupPage() {
   const [notifyEnabled, setNotifyEnabled] = useState<boolean>(true);
   const [notifyVolume, setNotifyVolume] = useState<number>(0.7);
 
-  // ★ 自動コピー用
+  // ★ 自動コピー関連
+  const [autoCopyEnabled, setAutoCopyEnabled] = useState<boolean>(true);
   const [lastAutoCopiedRaidId, setLastAutoCopiedRaidId] = useState<string | null>(null);
   const seenFilteredRaidIdsRef = useRef<Set<string>>(new Set());
   const autoCopyInitializedRef = useRef<boolean>(false);
@@ -55,7 +57,7 @@ export default function GroupPage() {
     }
 
     try {
-      // ★ 自分のユーザーIDを localStorage から取得
+      // 自分のユーザーIDを localStorage から取得
       let userId: string | null = null;
       try {
         if (typeof window !== "undefined") {
@@ -115,7 +117,7 @@ export default function GroupPage() {
     }
   }
 
-  // 通知音と設定の初期化
+  // 通知音＆各種設定の初期化
   useEffect(() => {
     // Audio インスタンス初期化
     audioRef.current = new Audio("/notify.mp3");
@@ -124,6 +126,7 @@ export default function GroupPage() {
 
     const savedEnabled = window.localStorage.getItem(NOTIFY_ENABLED_KEY);
     const savedVolume = window.localStorage.getItem(NOTIFY_VOLUME_KEY);
+    const savedAutoCopy = window.localStorage.getItem(AUTO_COPY_ENABLED_KEY);
 
     if (savedEnabled !== null) {
       setNotifyEnabled(savedEnabled === "true");
@@ -134,6 +137,9 @@ export default function GroupPage() {
         setNotifyVolume(v);
       }
     }
+    if (savedAutoCopy !== null) {
+      setAutoCopyEnabled(savedAutoCopy === "true");
+    }
   }, []);
 
   // 設定の保存
@@ -141,7 +147,8 @@ export default function GroupPage() {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(NOTIFY_ENABLED_KEY, String(notifyEnabled));
     window.localStorage.setItem(NOTIFY_VOLUME_KEY, String(notifyVolume));
-  }, [notifyEnabled, notifyVolume]);
+    window.localStorage.setItem(AUTO_COPY_ENABLED_KEY, String(autoCopyEnabled));
+  }, [notifyEnabled, notifyVolume, autoCopyEnabled]);
 
   const playNotifySound = useCallback(() => {
     if (!notifyEnabled) return;
@@ -210,7 +217,7 @@ export default function GroupPage() {
     ? raids.filter((raid) => getDisplayName(raid) === bossFilter)
     : raids;
 
-  // ★ 絞り込み後の新着IDを自動コピー
+  // ★ 絞り込み後の新着IDを自動コピー（オンのときのみ）
   useEffect(() => {
     // 絞り込み後の配列が空なら初期化だけ
     if (!filteredRaids || filteredRaids.length === 0) {
@@ -220,14 +227,19 @@ export default function GroupPage() {
 
     const currentIds = new Set(filteredRaids.map((r) => r.id));
 
-    // 絞り込み条件が変わった直後は、その時点の一覧を既知として扱い、
-    // 過去のIDは自動コピーしない
+    // 絞り込み条件が変わった直後は、その時点の一覧を既知として扱う
     const bossFilterChanged = bossFilter !== prevBossFilterRef.current;
     prevBossFilterRef.current = bossFilter;
 
     if (!autoCopyInitializedRef.current || bossFilterChanged) {
       seenFilteredRaidIdsRef.current = currentIds;
       autoCopyInitializedRef.current = true;
+      return;
+    }
+
+    // 自動コピーOFFのときはコピーせずに既知IDだけ更新
+    if (!autoCopyEnabled) {
+      seenFilteredRaidIdsRef.current = currentIds;
       return;
     }
 
@@ -258,7 +270,7 @@ export default function GroupPage() {
 
     // 今回の一覧を「既知」として保存
     seenFilteredRaidIdsRef.current = currentIds;
-  }, [filteredRaids, bossFilter]);
+  }, [filteredRaids, bossFilter, autoCopyEnabled]);
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-50 p-4">
@@ -269,7 +281,7 @@ export default function GroupPage() {
               参戦ID共有ビューア - グループ: {groupId}
             </h1>
             <p className="text-sm text-slate-400">
-              1秒ごとに自動更新 / クリックでIDコピー / 新着IDは自動コピー
+              1秒ごとに自動更新 / クリックでIDコピー / 新着IDの自動コピー対応
             </p>
           </div>
 
@@ -302,8 +314,8 @@ export default function GroupPage() {
               </button>
             </div>
 
-            {/* 通知音設定 */}
-            <div className="flex items-center gap-3 text-xs sm:text-sm">
+            {/* 通知音設定＆自動コピー設定 */}
+            <div className="flex flex-wrap items-center gap-3 text-xs sm:text-sm">
               <label className="inline-flex items-center gap-1 cursor-pointer select-none">
                 <input
                   type="checkbox"
@@ -332,6 +344,16 @@ export default function GroupPage() {
                   {Math.round(notifyVolume * 100)}%
                 </span>
               </div>
+
+              <label className="inline-flex items-center gap-1 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={autoCopyEnabled}
+                  onChange={(e) => setAutoCopyEnabled(e.target.checked)}
+                />
+                <span>自動コピー</span>
+              </label>
             </div>
           </div>
         </header>
