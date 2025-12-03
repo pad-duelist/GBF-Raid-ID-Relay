@@ -14,8 +14,8 @@ type RaidRow = {
   battle_name: string | null;
   hp_value: number | null;
   hp_percent: number | null;
-  member_current: number | null; // 追加
-  member_max: number | null;     // 追加
+  member_current: number | null;
+  member_max: number | null;
   user_name: string | null;
   created_at: string;
 };
@@ -26,6 +26,7 @@ const looksLikeUrl = (s: string | null | undefined): boolean =>
 const NOTIFY_ENABLED_KEY = "gbf-raid-notify-enabled";
 const NOTIFY_VOLUME_KEY = "gbf-raid-notify-volume";
 const AUTO_COPY_ENABLED_KEY = "gbf-raid-auto-copy-enabled";
+const COPIED_IDS_KEY = "gbf-copied-raid-ids";
 
 export default function GroupPage() {
   const params = useParams<{ groupId: string }>();
@@ -49,7 +50,40 @@ export default function GroupPage() {
   const autoCopyInitializedRef = useRef<boolean>(false);
   const prevBossFilterRef = useRef<string>("");
 
+  // ★ コピー済みID管理（raid.id をキーにする）
+  const [copiedIds, setCopiedIds] = useState<Set<string>>(new Set());
+
   const battleMap = useBattleNameMap();
+
+  // localStorage からコピー済みIDを読み込む
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(COPIED_IDS_KEY);
+      if (raw) {
+        const arr = JSON.parse(raw) as string[];
+        setCopiedIds(new Set(arr));
+      }
+    } catch (e) {
+      console.warn("copied ids load failed", e);
+    }
+  }, []);
+
+  // コピー済みIDを localStorage に保存するユーティリティ
+  const addToCopied = useCallback((id: string) => {
+    setCopiedIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      try {
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(COPIED_IDS_KEY, JSON.stringify(Array.from(next)));
+        }
+      } catch (e) {
+        console.warn("failed to save copied ids", e);
+      }
+      return next;
+    });
+  }, []);
 
   const fetchRaids = async () => {
     if (!groupId) {
@@ -109,11 +143,16 @@ export default function GroupPage() {
     return () => clearInterval(timer);
   }, [groupId]);
 
-  async function copyId(id: string) {
+  // copyId: 第1引数はクリップボードに書き込む文字列（raid.raid_id）、第2引数に行の内部ID(raid.id)を渡す
+  async function copyId(text: string, internalId?: string) {
     try {
-      await navigator.clipboard.writeText(id);
-      setCopyMessage(`ID ${id} をコピーしました`);
+      await navigator.clipboard.writeText(text);
+      setCopyMessage(`ID ${text} をコピーしました`);
       setTimeout(() => setCopyMessage(null), 1500);
+
+      if (internalId) {
+        addToCopied(internalId);
+      }
     } catch (e) {
       console.error(e);
     }
@@ -259,6 +298,7 @@ export default function GroupPage() {
           .writeText(target.raid_id)
           .then(() => {
             setLastAutoCopiedRaidId(target.id);
+            addToCopied(target.id); // ★ 自動コピーでもコピー済みマークを付与
             setCopyMessage(`ID ${target.raid_id} をコピーしました`);
             setTimeout(() => setCopyMessage(null), 1500);
           })
@@ -272,7 +312,7 @@ export default function GroupPage() {
 
     // 今回の一覧を「既知」として保存
     seenFilteredRaidIdsRef.current = currentIds;
-  }, [filteredRaids, bossFilter, autoCopyEnabled]);
+  }, [filteredRaids, bossFilter, autoCopyEnabled, addToCopied]);
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-50 p-4">
@@ -386,21 +426,22 @@ export default function GroupPage() {
                 )} HP (${raid.hp_percent.toFixed(1)}%)`;
               }
 
-              // ここで参戦者数テキストを作る
               const memberText =
                 raid.member_current != null && raid.member_max != null
                   ? `${raid.member_current}/${raid.member_max}`
                   : null;
 
               const isAutoCopied = raid.id === lastAutoCopiedRaidId;
+              const isCopied = copiedIds.has(raid.id);
 
               return (
                 <div
                   key={raid.id}
-                  onClick={() => copyId(raid.raid_id)}
+                  onClick={() => copyId(raid.raid_id, raid.id)}
                   className={
                     "flex items-center justify-between bg-slate-800/80 rounded-lg px-3 py-2 text-sm shadow cursor-pointer hover:bg-slate-700/80 transition-colors" +
-                    (isAutoCopied ? " ring-2 ring-emerald-400" : "")
+                    (isAutoCopied ? " ring-2 ring-emerald-400" : "") +
+                    (isCopied ? " opacity-60" : "")
                   }
                 >
                   <div className="flex items-center gap-3">
@@ -432,7 +473,6 @@ export default function GroupPage() {
                       {raid.user_name ?? "匿名"}
                     </div>
 
-                    {/* 参戦者数をここに表示 */}
                     {memberText && (
                       <div className="text-xs font-mono text-slate-200">
                         {memberText}
