@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { formatTimeAgo } from "@/lib/timeAgo";
 import { formatNumberWithComma } from "@/lib/numberFormat";
 import { useBattleNameMap } from "@/lib/useBattleNameMap";
+import useBattleMapping, { normalizeKey } from "@/lib/useBattleMapping";
 
 type RaidRow = {
   id: string;
@@ -18,7 +19,7 @@ type RaidRow = {
   member_max: number | null;
   user_name: string | null;
   created_at: string;
-  series?: string | null; // 追加: スプレッドシートの E 列 (series)
+  series?: string | null;
 };
 
 const looksLikeUrl = (s: string | null | undefined): boolean =>
@@ -37,7 +38,7 @@ export default function GroupPage() {
   const [raids, setRaids] = useState<RaidRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [bossFilter, setBossFilter] = useState<string>("");
-  const [seriesFilter, setSeriesFilter] = useState<string>(""); // 追加: シリーズ絞り込み
+  const [seriesFilter, setSeriesFilter] = useState<string>("");
   const [copyMessage, setCopyMessage] = useState<string | null>(null);
 
   const [lastNotifiedId, setLastNotifiedId] = useState<string | null>(null);
@@ -50,12 +51,12 @@ export default function GroupPage() {
   const [lastAutoCopiedRaidId, setLastAutoCopiedRaidId] = useState<string | null>(null);
   const seenFilteredRaidIdsRef = useRef<Set<string>>(new Set());
   const autoCopyInitializedRef = useRef<boolean>(false);
-  // prevFilterRef は bossFilter と seriesFilter の組合せを保持
   const prevFilterRef = useRef<string>("");
 
   const [copiedIds, setCopiedIds] = useState<Set<string>>(new Set());
 
   const battleMap = useBattleNameMap();
+  const { map: battleMappingMap, loading: mappingLoading } = useBattleMapping();
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -117,8 +118,43 @@ export default function GroupPage() {
       }
 
       const json = await res.json();
-      const data: RaidRow[] = Array.isArray(json) ? json : (json.raids as RaidRow[]) ?? [];
-      setRaids(data);
+
+      // デバッグ: 生の API レスポンスを出す
+      console.debug("/api/raids raw:", json);
+
+      const rawData: RaidRow[] = Array.isArray(json) ? json : (json.raids as RaidRow[]) ?? [];
+
+      // マッピングを使って series を注入する（既存の r.series が空ならマッピングを使う）
+      const merged = rawData.map((r) => {
+        // getDisplayName は下で定義しているので仮に name を作る（ただし getDisplayName 内の関数をここでも使う）
+        const boss = r.boss_name?.trim() || "";
+        const battle = r.battle_name?.trim() || "";
+        let displayName = "不明なマルチ";
+        if (boss && !looksLikeUrl(boss)) displayName = boss;
+        else if (battle && !looksLikeUrl(battle)) displayName = battle;
+
+        const key = normalizeKey(displayName);
+        const mapping = battleMappingMap[key];
+        const mergedSeries =
+          (r.series && r.series.toString().trim().length > 0)
+            ? r.series.toString().trim()
+            : mapping?.series ?? null;
+
+        return { ...r, series: mergedSeries };
+      });
+
+      // デバッグ: merged の sample を出力
+      console.debug(
+        "merged sample (first 10):",
+        merged.slice(0, 10).map((r) => ({
+          id: r.id,
+          raid_id: r.raid_id,
+          display: r.boss_name || r.battle_name,
+          series: r.series,
+        }))
+      );
+
+      setRaids(merged);
     } catch (e) {
       console.error("fetchRaids error", e);
       setRaids([]);
@@ -132,7 +168,8 @@ export default function GroupPage() {
     fetchRaids();
     const timer = setInterval(fetchRaids, 1000);
     return () => clearInterval(timer);
-  }, [groupId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupId, battleMappingMap]); // battleMappingMap を依存に入れて、マッピング取得後に再フェッチできるようにする
 
   async function copyId(text: string, internalId?: string) {
     try {
@@ -221,14 +258,16 @@ export default function GroupPage() {
     )
   );
 
-  // ユニークな series を抽出（トリムして空文字は除外）
-  const uniqueSeries = Array.from(
-    new Set(
-      raids
-        .map((r) => (r.series ?? "").toString().trim())
-        .filter((s) => s && s.length > 0)
-    )
-  );
+  // series の正規化＋カウント
+  const seriesCountMap = raids.reduce<Record<string, number>>((acc, r) => {
+    const raw = (r.series ?? "").toString();
+    const normalized = raw.replace(/\u3000/g, " ").trim();
+    if (!normalized) return acc;
+    acc[normalized] = (acc[normalized] || 0) + 1;
+    return acc;
+  }, {});
+
+  const uniqueSeries = Object.keys(seriesCountMap).sort();
 
   // 両方のフィルタを適用
   const filteredRaids = raids.filter((raid) => {
@@ -295,6 +334,9 @@ export default function GroupPage() {
             <p className="text-sm text-slate-400">
               1秒ごとに自動更新 / クリックでIDコピー / 新着IDの自動コピー対応
             </p>
+            <p className="text-xs text-slate-400">
+              シリーズマッピング: {mappingLoading ? "読み込み中..." : "読み込み完了"}
+            </p>
           </div>
 
           <div className="flex flex-col gap-2 sm:items-end">
@@ -317,7 +359,6 @@ export default function GroupPage() {
                 </select>
               </div>
 
-              {/* 追加: シリーズ絞り込み */}
               <div className="flex flex-col gap-1">
                 <label className="text-xs sm:text-sm text-slate-300">
                   シリーズ絞り込み
@@ -330,10 +371,24 @@ export default function GroupPage() {
                   <option value="">すべて</option>
                   {uniqueSeries.map((s) => (
                     <option key={s} value={s}>
-                      {s}
+                      {s} ({seriesCountMap[s]})
                     </option>
                   ))}
                 </select>
+
+                {/* デバッグ表示: 読み取った series 一覧 */}
+                <div className="text-xs text-slate-400 mt-1">
+                  読み取った series:{" "}
+                  {uniqueSeries.length === 0 ? (
+                    <span>（なし）</span>
+                  ) : (
+                    uniqueSeries.map((s) => (
+                      <span key={s} className="mr-2">
+                        {s} ({seriesCountMap[s]})
+                      </span>
+                    ))
+                  )}
+                </div>
               </div>
 
               <button
@@ -344,7 +399,6 @@ export default function GroupPage() {
                 音テスト
               </button>
 
-              {/* ランキングページへの遷移ボタン */}
               <button
                 type="button"
                 onClick={() => router.push(`/raids/rankings?groupId=${groupId}`)}
@@ -453,8 +507,10 @@ export default function GroupPage() {
                         <span className="text-xs text-slate-400">{timeAgo}</span>
                       </div>
                       <div className="text-xs text-slate-300">{labelName}</div>
-                      {raid.series && (
+                      {raid.series ? (
                         <div className="text-xs text-slate-400">シリーズ: {raid.series}</div>
+                      ) : (
+                        <div className="text-xs text-slate-500">シリーズ: （未設定）</div>
                       )}
                     </div>
                   </div>
