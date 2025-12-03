@@ -3,14 +3,13 @@
 export const dynamic = "force-dynamic";
 
 import React, { useEffect, useState, useRef } from "react";
-import { useSearchParams } from "next/navigation";
 
 type Poster = { sender_user_id: string | null; user_name: string | null; post_count: number; };
 type Battle = { battle_name: string; post_count: number; };
 
 export default function RaidRankingsPage() {
-  const sp = useSearchParams();
-  const groupId = sp.get("groupId") || "";
+  // searchParams フックを使わず、window.location を直接参照する実装に変更
+  const [groupId, setGroupId] = useState<string>("");
   const [posters, setPosters] = useState<Poster[]>([]);
   const [battles, setBattles] = useState<Battle[]>([]);
   const [days, setDays] = useState<number>(7);
@@ -18,6 +17,23 @@ export default function RaidRankingsPage() {
   const [auto, setAuto] = useState<boolean>(true);
   const intervalRef = useRef<number | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // groupId を URL から取得（ページ読み込み時と履歴変更時に対応）
+  useEffect(() => {
+    function readGroupIdFromUrl() {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const g = params.get("groupId") || "";
+        setGroupId(g);
+      } catch (e) {
+        setGroupId("");
+      }
+    }
+    readGroupIdFromUrl();
+    const onPop = () => readGroupIdFromUrl();
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
   async function fetchRankings() {
     if (!groupId) return;
@@ -30,7 +46,9 @@ export default function RaidRankingsPage() {
       const pj = await pRes.json();
       const bj = await bRes.json();
       if (pj.ok) setPosters(pj.data as Poster[]);
+      else setPosters([]);
       if (bj.ok) setBattles(bj.data as Battle[]);
+      else setBattles([]);
     } catch (e) {
       console.error(e);
     } finally {
@@ -39,15 +57,15 @@ export default function RaidRankingsPage() {
   }
 
   useEffect(() => {
+    // groupId が空の間は取得しない
+    if (!groupId) return;
     fetchRankings();
     if (auto) {
-      // window.setInterval を使うことで clearInterval と型が合うようにする
       intervalRef.current = window.setInterval(fetchRankings, 30_000) as unknown as number;
     }
     return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      intervalRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId, days, limit, auto]);
@@ -61,6 +79,7 @@ export default function RaidRankingsPage() {
   return (
     <div className="p-4">
       <h1 className="text-xl font-bold mb-3">ランキング（グループ: {groupId || "未指定"})</h1>
+
       <div className="flex items-center gap-3 mb-4">
         <label>期間(日):</label>
         <select value={days} onChange={(e) => setDays(Number(e.target.value))} className="border rounded px-2 py-1">
@@ -85,26 +104,28 @@ export default function RaidRankingsPage() {
         <section>
           <h2 className="font-semibold mb-2">投稿者ランキング</h2>
           <ol className="space-y-2">
-            {posters.length === 0 && <li>データがありません</li>}
-            {posters.map((p, i) => (
-              <li key={p.sender_user_id ?? i} className="flex justify-between items-center">
-                <div><strong>{i + 1}.</strong> {anonymize(p.user_name)}</div>
-                <div>{p.post_count}</div>
-              </li>
-            ))}
+            {posters.length === 0 ? <li>データがありません</li> :
+              posters.map((p, i) => (
+                <li key={p.sender_user_id ?? i} className="flex justify-between items-center">
+                  <div><strong>{i + 1}.</strong> {anonymize(p.user_name)}</div>
+                  <div>{p.post_count}</div>
+                </li>
+              ))
+            }
           </ol>
         </section>
 
         <section>
           <h2 className="font-semibold mb-2">人気バトルランキング</h2>
           <ol className="space-y-2">
-            {battles.length === 0 && <li>データがありません</li>}
-            {battles.map((b, i) => (
-              <li key={b.battle_name ?? i} className="flex justify-between items-center">
-                <div><strong>{i + 1}.</strong> {b.battle_name}</div>
-                <div>{b.post_count}</div>
-              </li>
-            ))}
+            {battles.length === 0 ? <li>データがありません</li> :
+              battles.map((b, i) => (
+                <li key={b.battle_name ?? i} className="flex justify-between items-center">
+                  <div><strong>{i + 1}.</strong> {b.battle_name}</div>
+                  <div>{b.post_count}</div>
+                </li>
+              ))
+            }
           </ol>
         </section>
       </div>
