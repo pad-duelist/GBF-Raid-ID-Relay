@@ -86,6 +86,25 @@ function toIntOrNull(v: any): number | null {
   return Number.isFinite(n) ? Math.trunc(n) : null;
 }
 
+// ===== 新規: 参戦者数抑制判定ユーティリティ =====
+function shouldSuppressByMembers(
+  memberCurrentRaw: any,
+  memberMaxRaw: any
+): boolean {
+  const mc = toIntOrNull(memberCurrentRaw);
+  const mm = toIntOrNull(memberMaxRaw);
+
+  if (mc === null || mm === null) return false;
+
+  // member_max が 6 のときは member_current が 6 の場合に流さない
+  if (mm === 6 && mc === 6) return true;
+
+  // member_max が 18 または 30 のときは member_current が 10 以上なら流さない
+  if ((mm === 18 || mm === 30) && mc >= 10) return true;
+
+  return false;
+}
+
 // ===== GET: 一覧取得 =====
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -191,6 +210,15 @@ export async function POST(req: NextRequest) {
         bossName
       );
       return NextResponse.json({ ok: true, blocked: true }, { status: 200 });
+    }
+
+    // ===== 参戦者数ルールで抑制する場合は早期終了 =====
+    if (shouldSuppressByMembers(memberCurrent, memberMax)) {
+      console.log(
+        "[POST /api/raids] suppressed by member counts, skip insert",
+        { groupId, raidId, member_current: memberCurrent, member_max: memberMax }
+      );
+      return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
     }
 
     // ===== 重複チェック（同じ group_id + raid_id が既にある場合はスキップ）=====
