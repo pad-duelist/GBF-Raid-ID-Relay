@@ -18,6 +18,7 @@ type RaidRow = {
   member_max: number | null;
   user_name: string | null;
   created_at: string;
+  series?: string | null; // 追加: スプレッドシートの E 列 (series)
 };
 
 const looksLikeUrl = (s: string | null | undefined): boolean =>
@@ -36,6 +37,7 @@ export default function GroupPage() {
   const [raids, setRaids] = useState<RaidRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [bossFilter, setBossFilter] = useState<string>("");
+  const [seriesFilter, setSeriesFilter] = useState<string>(""); // 追加: シリーズ絞り込み
   const [copyMessage, setCopyMessage] = useState<string | null>(null);
 
   const [lastNotifiedId, setLastNotifiedId] = useState<string | null>(null);
@@ -48,7 +50,8 @@ export default function GroupPage() {
   const [lastAutoCopiedRaidId, setLastAutoCopiedRaidId] = useState<string | null>(null);
   const seenFilteredRaidIdsRef = useRef<Set<string>>(new Set());
   const autoCopyInitializedRef = useRef<boolean>(false);
-  const prevBossFilterRef = useRef<string>("");
+  // prevFilterRef は bossFilter と seriesFilter の組合せを保持
+  const prevFilterRef = useRef<string>("");
 
   const [copiedIds, setCopiedIds] = useState<Set<string>>(new Set());
 
@@ -218,9 +221,22 @@ export default function GroupPage() {
     )
   );
 
-  const filteredRaids = bossFilter
-    ? raids.filter((raid) => getDisplayName(raid) === bossFilter)
-    : raids;
+  // ユニークな series を抽出（トリムして空文字は除外）
+  const uniqueSeries = Array.from(
+    new Set(
+      raids
+        .map((r) => (r.series ?? "").toString().trim())
+        .filter((s) => s && s.length > 0)
+    )
+  );
+
+  // 両方のフィルタを適用
+  const filteredRaids = raids.filter((raid) => {
+    const matchBoss = bossFilter ? getDisplayName(raid) === bossFilter : true;
+    const raidSeries = (raid.series ?? "").toString().trim();
+    const matchSeries = seriesFilter ? raidSeries === seriesFilter : true;
+    return matchBoss && matchSeries;
+  });
 
   useEffect(() => {
     if (!filteredRaids || filteredRaids.length === 0) {
@@ -229,10 +245,11 @@ export default function GroupPage() {
     }
 
     const currentIds = new Set(filteredRaids.map((r) => r.id));
-    const bossFilterChanged = bossFilter !== prevBossFilterRef.current;
-    prevBossFilterRef.current = bossFilter;
+    const combinedFilterKey = `${bossFilter}|${seriesFilter}`;
+    const filterChanged = combinedFilterKey !== prevFilterRef.current;
+    prevFilterRef.current = combinedFilterKey;
 
-    if (!autoCopyInitializedRef.current || bossFilterChanged) {
+    if (!autoCopyInitializedRef.current || filterChanged) {
       seenFilteredRaidIdsRef.current = currentIds;
       autoCopyInitializedRef.current = true;
       return;
@@ -265,7 +282,7 @@ export default function GroupPage() {
     }
 
     seenFilteredRaidIdsRef.current = currentIds;
-  }, [filteredRaids, bossFilter, autoCopyEnabled, addToCopied]);
+  }, [filteredRaids, bossFilter, seriesFilter, autoCopyEnabled, addToCopied]);
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-50 p-4">
@@ -295,6 +312,25 @@ export default function GroupPage() {
                   {uniqueBosses.map((boss) => (
                     <option key={boss} value={boss}>
                       {boss}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* 追加: シリーズ絞り込み */}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs sm:text-sm text-slate-300">
+                  シリーズ絞り込み
+                </label>
+                <select
+                  className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs sm:text-sm"
+                  value={seriesFilter}
+                  onChange={(e) => setSeriesFilter(e.target.value)}
+                >
+                  <option value="">すべて</option>
+                  {uniqueSeries.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
                     </option>
                   ))}
                 </select>
@@ -417,6 +453,9 @@ export default function GroupPage() {
                         <span className="text-xs text-slate-400">{timeAgo}</span>
                       </div>
                       <div className="text-xs text-slate-300">{labelName}</div>
+                      {raid.series && (
+                        <div className="text-xs text-slate-400">シリーズ: {raid.series}</div>
+                      )}
                     </div>
                   </div>
 
