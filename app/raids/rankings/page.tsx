@@ -1,5 +1,6 @@
 // app/raids/rankings/page.tsx
 "use client";
+export const dynamic = "force-dynamic";
 
 import React, { useEffect, useState, useRef } from "react";
 import { useSearchParams } from "next/navigation";
@@ -40,10 +41,13 @@ export default function RaidRankingsPage() {
   useEffect(() => {
     fetchRankings();
     if (auto) {
-      intervalRef.current = window.setInterval(fetchRankings, 30_000);
+      // window.setInterval を使うことで clearInterval と型が合うようにする
+      intervalRef.current = window.setInterval(fetchRankings, 30_000) as unknown as number;
     }
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId, days, limit, auto]);
