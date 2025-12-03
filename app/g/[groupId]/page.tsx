@@ -119,14 +119,13 @@ export default function GroupPage() {
 
       const json = await res.json();
 
-      // デバッグ: 生の API レスポンスを出す
+      // デバッグ: 生の API レスポンス（必要ならコンソールで確認）
       console.debug("/api/raids raw:", json);
 
       const rawData: RaidRow[] = Array.isArray(json) ? json : (json.raids as RaidRow[]) ?? [];
 
       // マッピングを使って series を注入する（既存の r.series が空ならマッピングを使う）
       const merged = rawData.map((r) => {
-        // getDisplayName は下で定義しているので仮に name を作る（ただし getDisplayName 内の関数をここでも使う）
         const boss = r.boss_name?.trim() || "";
         const battle = r.battle_name?.trim() || "";
         let displayName = "不明なマルチ";
@@ -143,7 +142,7 @@ export default function GroupPage() {
         return { ...r, series: mergedSeries };
       });
 
-      // デバッグ: merged の sample を出力
+      // デバッグ: merged の sample を出力（コンソールでチェック）
       console.debug(
         "merged sample (first 10):",
         merged.slice(0, 10).map((r) => ({
@@ -169,7 +168,7 @@ export default function GroupPage() {
     const timer = setInterval(fetchRaids, 1000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupId, battleMappingMap]); // battleMappingMap を依存に入れて、マッピング取得後に再フェッチできるようにする
+  }, [groupId, battleMappingMap]);
 
   async function copyId(text: string, internalId?: string) {
     try {
@@ -258,7 +257,7 @@ export default function GroupPage() {
     )
   );
 
-  // series の正規化＋カウント
+  // series の正規化＋カウント（内部で件数は保持するが表示には使わない）
   const seriesCountMap = raids.reduce<Record<string, number>>((acc, r) => {
     const raw = (r.series ?? "").toString();
     const normalized = raw.replace(/\u3000/g, " ").trim();
@@ -340,13 +339,15 @@ export default function GroupPage() {
           </div>
 
           <div className="flex flex-col gap-2 sm:items-end">
-            <div className="flex items-center gap-2">
-              <div className="flex flex-col gap-1">
-                <label className="text-xs sm:text-sm text-slate-300">
+            {/* 並べて表示する行（ボス絞り込み + シリーズ絞り込み） */}
+            <div className="flex items-stretch gap-2">
+              {/* マルチ絞り込み */}
+              <div className="flex flex-col">
+                <label className="text-xs sm:text-sm text-slate-300 mb-1">
                   マルチ絞り込み
                 </label>
                 <select
-                  className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs sm:text-sm"
+                  className="bg-slate-800 border border-slate-600 rounded px-3 text-xs sm:text-sm h-9"
                   value={bossFilter}
                   onChange={(e) => setBossFilter(e.target.value)}
                 >
@@ -359,53 +360,42 @@ export default function GroupPage() {
                 </select>
               </div>
 
-              <div className="flex flex-col gap-1">
-                <label className="text-xs sm:text-sm text-slate-300">
+              {/* シリーズ絞り込み（高さを boss と揃える） */}
+              <div className="flex flex-col">
+                <label className="text-xs sm:text-sm text-slate-300 mb-1">
                   シリーズ絞り込み
                 </label>
                 <select
-                  className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs sm:text-sm"
+                  className="bg-slate-800 border border-slate-600 rounded px-3 text-xs sm:text-sm h-9"
                   value={seriesFilter}
                   onChange={(e) => setSeriesFilter(e.target.value)}
                 >
                   <option value="">すべて</option>
                   {uniqueSeries.map((s) => (
                     <option key={s} value={s}>
-                      {s} ({seriesCountMap[s]})
+                      {s}
                     </option>
                   ))}
                 </select>
-
-                {/* デバッグ表示: 読み取った series 一覧 */}
-                <div className="text-xs text-slate-400 mt-1">
-                  読み取った series:{" "}
-                  {uniqueSeries.length === 0 ? (
-                    <span>（なし）</span>
-                  ) : (
-                    uniqueSeries.map((s) => (
-                      <span key={s} className="mr-2">
-                        {s} ({seriesCountMap[s]})
-                      </span>
-                    ))
-                  )}
-                </div>
               </div>
 
-              <button
-                type="button"
-                onClick={() => playNotifySound()}
-                className="ml-2 bg-slate-700 hover:bg-slate-600 text-xs px-2 py-1 rounded"
-              >
-                音テスト
-              </button>
+              <div className="flex items-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => playNotifySound()}
+                  className="bg-slate-700 hover:bg-slate-600 text-xs px-2 py-1 rounded h-9 flex items-center"
+                >
+                  音テスト
+                </button>
 
-              <button
-                type="button"
-                onClick={() => router.push(`/raids/rankings?groupId=${groupId}`)}
-                className="ml-2 bg-yellow-500 hover:bg-yellow-400 text-black text-xs px-2 py-1 rounded"
-              >
-                ランキングを見る
-              </button>
+                <button
+                  type="button"
+                  onClick={() => router.push(`/raids/rankings?groupId=${groupId}`)}
+                  className="bg-yellow-500 hover:bg-yellow-400 text-black text-xs px-2 py-1 rounded h-9 flex items-center"
+                >
+                  ランキングを見る
+                </button>
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-3 text-xs sm:text-sm">
