@@ -330,12 +330,6 @@ export default function GroupPage() {
             <h1 className="text-xl font-bold">
               参戦ID共有ビューア - グループ: {groupId}
             </h1>
-            <p className="text-sm text-slate-400">
-              1秒ごとに自動更新 / クリックでIDコピー / 新着IDの自動コピー対応
-            </p>
-            <p className="text-xs text-slate-400">
-              シリーズマッピング: {mappingLoading ? "読み込み中..." : "読み込み完了"}
-            </p>
           </div>
 
           <div className="flex flex-col gap-2 sm:items-end">
@@ -497,11 +491,7 @@ export default function GroupPage() {
                         <span className="text-xs text-slate-400">{timeAgo}</span>
                       </div>
                       <div className="text-xs text-slate-300">{labelName}</div>
-                      {raid.series ? (
-                        <div className="text-xs text-slate-400">シリーズ: {raid.series}</div>
-                      ) : (
-                        <div className="text-xs text-slate-500">シリーズ: （未設定）</div>
-                      )}
+                      {/* シリーズ表示は削除しました */}
                     </div>
                   </div>
 
