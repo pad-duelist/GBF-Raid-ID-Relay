@@ -7,20 +7,17 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: { persistSession: false },
 });
 
-export async function POST(req: NextRequest) {
-  let payload: any = {};
-  try {
-    const contentType = req.headers.get("content-type") || "";
+export async function OPTIONS() {
+  const res = new NextResponse(null);
+  res.headers.set("Access-Control-Allow-Origin", "*");
+  res.headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.headers.set("Access-Control-Allow-Headers", "Content-Type");
+  return res;
+}
 
-    if (contentType.includes("application/json")) {
-      payload = await req.json();
-    } else if (contentType.includes("application/x-www-form-urlencoded")) {
-      const formData = await req.formData();
-      const data = formData.get("data") as string;
-      payload = JSON.parse(data);
-    } else {
-      return NextResponse.json({ ok: false, error: "Unsupported content type" }, { status: 400 });
-    }
+export async function POST(req: NextRequest) {
+  try {
+    const payload = await req.json(); // fetch からの JSON を取得
 
     const { error } = await supabase.from("beacons").insert([payload]);
     if (error) {
@@ -28,17 +25,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ ok: true });
+    const res = NextResponse.json({ ok: true });
+    res.headers.set("Access-Control-Allow-Origin", "*");
+    return res;
   } catch (e: any) {
     console.error("POST error:", e);
     return NextResponse.json({ ok: false, error: e.message }, { status: 500 });
   }
-}
-
-export async function OPTIONS() {
-  const res = new NextResponse(null);
-  res.headers.set("Access-Control-Allow-Origin", "*");
-  res.headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.headers.set("Access-Control-Allow-Headers", "Content-Type");
-  return res;
 }
