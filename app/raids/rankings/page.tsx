@@ -63,22 +63,38 @@ export default function RaidRankingsPage() {
       <h1 className="text-xl font-bold mb-3">ランキング（グループ: {groupId || "未指定"})</h1>
 
       <div className="flex items-center gap-3 mb-4">
-        <label>期間(日):</label>
-        <select value={days} onChange={(e) => setDays(Number(e.target.value))} className="border rounded px-2 py-1">
+        <label className="text-black">期間(日):</label>
+        <select
+          value={days}
+          onChange={(e) => setDays(Number(e.target.value))}
+          className="border rounded px-2 py-1 text-black"
+        >
           <option value={1}>1</option>
           <option value={7}>7</option>
           <option value={30}>30</option>
           <option value={365}>全期間</option>
         </select>
 
-        <label>表示数:</label>
-        <input type="number" value={limit} min={1} max={50} onChange={(e) => setLimit(Number(e.target.value))} className="w-20 border rounded px-2 py-1" />
+        <label className="text-black">表示数:</label>
+        <input
+          type="number"
+          value={limit}
+          min={1}
+          max={50}
+          onChange={(e) => setLimit(Number(e.target.value))}
+          className="w-20 border rounded px-2 py-1 text-black"
+        />
 
-        <label className="ml-4">
+        <label className="ml-4 text-black">
           <input type="checkbox" checked={auto} onChange={() => setAuto((s) => !s)} /> 自動更新
         </label>
 
-        <button onClick={fetchRankings} className="ml-2 px-3 py-1 bg-gray-200 rounded">手動更新</button>
+        <button
+          onClick={fetchRankings}
+          className="ml-2 px-3 py-1 bg-gray-200 rounded text-black"
+        >
+          手動更新
+        </button>
         {loading && <span className="ml-2 text-sm text-gray-500">読み込み中…</span>}
       </div>
 
@@ -86,28 +102,32 @@ export default function RaidRankingsPage() {
         <section>
           <h2 className="font-semibold mb-2">投稿者ランキング</h2>
           <ol className="space-y-2">
-            {posters.length === 0 ? <li>データがありません</li> :
+            {posters.length === 0 ? (
+              <li>データがありません</li>
+            ) : (
               posters.map((p, i) => (
                 <li key={p.sender_user_id ?? i} className="flex justify-between items-center">
                   <div><strong>{i + 1}.</strong> {p.user_name || "(不明)"}</div>
                   <div>{p.post_count}</div>
                 </li>
               ))
-            }
+            )}
           </ol>
         </section>
 
         <section>
           <h2 className="font-semibold mb-2">人気バトルランキング</h2>
           <ol className="space-y-2">
-            {battles.length === 0 ? <li>データがありません</li> :
+            {battles.length === 0 ? (
+              <li>データがありません</li>
+            ) : (
               battles.map((b, i) => (
                 <li key={b.battle_name ?? i} className="flex justify-between items-center">
                   <div><strong>{i + 1}.</strong> {b.battle_name}</div>
                   <div>{b.post_count}</div>
                 </li>
               ))
-            }
+            )}
           </ol>
         </section>
       </div>

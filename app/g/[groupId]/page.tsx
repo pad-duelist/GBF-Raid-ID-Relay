@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { formatTimeAgo } from "@/lib/timeAgo";
 import { formatNumberWithComma } from "@/lib/numberFormat";
 import { useBattleNameMap } from "@/lib/useBattleNameMap";
@@ -31,6 +31,7 @@ const COPIED_IDS_KEY = "gbf-copied-raid-ids";
 export default function GroupPage() {
   const params = useParams<{ groupId: string }>();
   const groupId = params.groupId;
+  const router = useRouter();
 
   const [raids, setRaids] = useState<RaidRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -43,19 +44,16 @@ export default function GroupPage() {
   const [notifyEnabled, setNotifyEnabled] = useState<boolean>(true);
   const [notifyVolume, setNotifyVolume] = useState<number>(0.7);
 
-  // ★ 自動コピー関連
   const [autoCopyEnabled, setAutoCopyEnabled] = useState<boolean>(true);
   const [lastAutoCopiedRaidId, setLastAutoCopiedRaidId] = useState<string | null>(null);
   const seenFilteredRaidIdsRef = useRef<Set<string>>(new Set());
   const autoCopyInitializedRef = useRef<boolean>(false);
   const prevBossFilterRef = useRef<string>("");
 
-  // ★ コピー済みID管理（raid.id をキーにする）
   const [copiedIds, setCopiedIds] = useState<Set<string>>(new Set());
 
   const battleMap = useBattleNameMap();
 
-  // localStorage からコピー済みIDを読み込む
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
@@ -69,7 +67,6 @@ export default function GroupPage() {
     }
   }, []);
 
-  // コピー済みIDを localStorage に保存するユーティリティ
   const addToCopied = useCallback((id: string) => {
     setCopiedIds((prev) => {
       const next = new Set(prev);
@@ -93,14 +90,9 @@ export default function GroupPage() {
     }
 
     try {
-      // 自分のユーザーIDを localStorage から取得
       let userId: string | null = null;
-      try {
-        if (typeof window !== "undefined") {
-          userId = localStorage.getItem("extensionUserId");
-        }
-      } catch {
-        userId = null;
+      if (typeof window !== "undefined") {
+        userId = localStorage.getItem("extensionUserId");
       }
 
       const query = new URLSearchParams({
@@ -108,7 +100,6 @@ export default function GroupPage() {
         limit: "50",
       });
 
-      // 自分のユーザーIDがあれば、それを除外条件として渡す
       if (userId && userId.trim().length > 0) {
         query.set("excludeUserId", userId.trim());
       }
@@ -123,10 +114,7 @@ export default function GroupPage() {
       }
 
       const json = await res.json();
-      const data: RaidRow[] = Array.isArray(json)
-        ? json
-        : (json.raids as RaidRow[]) ?? [];
-
+      const data: RaidRow[] = Array.isArray(json) ? json : (json.raids as RaidRow[]) ?? [];
       setRaids(data);
     } catch (e) {
       console.error("fetchRaids error", e);
@@ -143,7 +131,6 @@ export default function GroupPage() {
     return () => clearInterval(timer);
   }, [groupId]);
 
-  // copyId: 第1引数はクリップボードに書き込む文字列（raid.raid_id）、第2引数に行の内部ID(raid.id)を渡す
   async function copyId(text: string, internalId?: string) {
     try {
       await navigator.clipboard.writeText(text);
@@ -158,9 +145,7 @@ export default function GroupPage() {
     }
   }
 
-  // 通知音＆各種設定の初期化
   useEffect(() => {
-    // Audio インスタンス初期化
     audioRef.current = new Audio("/notify.mp3");
 
     if (typeof window === "undefined") return;
@@ -169,21 +154,14 @@ export default function GroupPage() {
     const savedVolume = window.localStorage.getItem(NOTIFY_VOLUME_KEY);
     const savedAutoCopy = window.localStorage.getItem(AUTO_COPY_ENABLED_KEY);
 
-    if (savedEnabled !== null) {
-      setNotifyEnabled(savedEnabled === "true");
-    }
+    if (savedEnabled !== null) setNotifyEnabled(savedEnabled === "true");
     if (savedVolume !== null) {
       const v = Number(savedVolume);
-      if (!Number.isNaN(v) && v >= 0 && v <= 1) {
-        setNotifyVolume(v);
-      }
+      if (!Number.isNaN(v) && v >= 0 && v <= 1) setNotifyVolume(v);
     }
-    if (savedAutoCopy !== null) {
-      setAutoCopyEnabled(savedAutoCopy === "true");
-    }
+    if (savedAutoCopy !== null) setAutoCopyEnabled(savedAutoCopy === "true");
   }, []);
 
-  // 設定の保存
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(NOTIFY_ENABLED_KEY, String(notifyEnabled));
@@ -193,23 +171,14 @@ export default function GroupPage() {
 
   const playNotifySound = useCallback(() => {
     if (!notifyEnabled) return;
-
-    if (!audioRef.current) {
-      audioRef.current = new Audio("/notify.mp3");
-    }
+    if (!audioRef.current) audioRef.current = new Audio("/notify.mp3");
 
     const audio = audioRef.current;
-    audio.volume = notifyVolume; // 0.0〜1.0
+    audio.volume = notifyVolume;
     audio.currentTime = 0;
-
-    audio
-      .play()
-      .catch(() => {
-        /* ignore */
-      });
+    audio.play().catch(() => {});
   }, [notifyEnabled, notifyVolume]);
 
-  // 新着IDで通知音を鳴らす（全体の最新ID）
   useEffect(() => {
     if (!raids || raids.length === 0) return;
 
@@ -229,19 +198,14 @@ export default function GroupPage() {
   const getDisplayName = (raid: RaidRow): string => {
     const boss = raid.boss_name?.trim() || "";
     const battle = raid.battle_name?.trim() || "";
-
     if (boss && !looksLikeUrl(boss)) return boss;
     if (battle && !looksLikeUrl(battle)) return battle;
     return "不明なマルチ";
   };
 
   const getImageUrl = (raid: RaidRow): string | undefined => {
-    if (looksLikeUrl(raid.battle_name)) {
-      return raid.battle_name as string;
-    }
-    if (looksLikeUrl(raid.boss_name)) {
-      return raid.boss_name as string;
-    }
+    if (looksLikeUrl(raid.battle_name)) return raid.battle_name as string;
+    if (looksLikeUrl(raid.boss_name)) return raid.boss_name as string;
     const name = getDisplayName(raid);
     return battleMap[name];
   };
@@ -258,17 +222,13 @@ export default function GroupPage() {
     ? raids.filter((raid) => getDisplayName(raid) === bossFilter)
     : raids;
 
-  // ★ 絞り込み後の新着IDを自動コピー（オンのときのみ）
   useEffect(() => {
-    // 絞り込み後の配列が空なら初期化だけ
     if (!filteredRaids || filteredRaids.length === 0) {
       seenFilteredRaidIdsRef.current = new Set();
       return;
     }
 
     const currentIds = new Set(filteredRaids.map((r) => r.id));
-
-    // 絞り込み条件が変わった直後は、その時点の一覧を既知として扱う
     const bossFilterChanged = bossFilter !== prevBossFilterRef.current;
     prevBossFilterRef.current = bossFilter;
 
@@ -278,39 +238,32 @@ export default function GroupPage() {
       return;
     }
 
-    // 自動コピーOFFのときはコピーせずに既知IDだけ更新
     if (!autoCopyEnabled) {
       seenFilteredRaidIdsRef.current = currentIds;
       return;
     }
 
-    // 以前見ていなかった ID = 新しく絞り込み結果に入ってきた ID
     const newlyAdded = filteredRaids.filter(
       (raid) => !seenFilteredRaidIdsRef.current.has(raid.id)
     );
 
     if (newlyAdded.length > 0) {
-      // 一番新しいもの（一覧は新しい順の想定なので先頭）をコピー
       const target = newlyAdded[0];
-
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard
           .writeText(target.raid_id)
           .then(() => {
             setLastAutoCopiedRaidId(target.id);
-            addToCopied(target.id); // ★ 自動コピーでもコピー済みマークを付与
+            addToCopied(target.id);
             setCopyMessage(`ID ${target.raid_id} をコピーしました`);
             setTimeout(() => setCopyMessage(null), 1500);
           })
           .catch((err) => {
             console.error("自動コピーに失敗しました:", err);
           });
-      } else {
-        console.warn("Clipboard API が利用できません。");
       }
     }
 
-    // 今回の一覧を「既知」として保存
     seenFilteredRaidIdsRef.current = currentIds;
   }, [filteredRaids, bossFilter, autoCopyEnabled, addToCopied]);
 
@@ -354,9 +307,17 @@ export default function GroupPage() {
               >
                 音テスト
               </button>
+
+              {/* ランキングページへの遷移ボタン */}
+              <button
+                type="button"
+                onClick={() => router.push(`/raids/rankings?groupId=${groupId}`)}
+                className="ml-2 bg-yellow-500 hover:bg-yellow-400 text-black text-xs px-2 py-1 rounded"
+              >
+                ランキングを見る
+              </button>
             </div>
 
-            {/* 通知音設定＆自動コピー設定 */}
             <div className="flex flex-wrap items-center gap-3 text-xs sm:text-sm">
               <label className="inline-flex items-center gap-1 cursor-pointer select-none">
                 <input
@@ -377,14 +338,11 @@ export default function GroupPage() {
                   value={Math.round(notifyVolume * 100)}
                   onChange={(e) => {
                     const v = Number(e.target.value);
-                    const normalized =
-                      Math.min(100, Math.max(0, v)) / 100;
+                    const normalized = Math.min(100, Math.max(0, v)) / 100;
                     setNotifyVolume(normalized);
                   }}
                 />
-                <span className="w-10 text-right">
-                  {Math.round(notifyVolume * 100)}%
-                </span>
+                <span className="w-10 text-right">{Math.round(notifyVolume * 100)}%</span>
               </div>
 
               <label className="inline-flex items-center gap-1 cursor-pointer select-none">
@@ -407,9 +365,7 @@ export default function GroupPage() {
         {loading ? (
           <div>読み込み中...</div>
         ) : filteredRaids.length === 0 ? (
-          <div className="text-slate-400 text-sm">
-            まだIDが流れていません。
-          </div>
+          <div className="text-slate-400 text-sm">まだIDが流れていません。</div>
         ) : (
           <div className="space-y-2">
             {filteredRaids.map((raid) => {
@@ -458,13 +414,9 @@ export default function GroupPage() {
                         <span className="font-mono text-base underline decoration-dotted">
                           {raid.raid_id}
                         </span>
-                        <span className="text-xs text-slate-400">
-                          {timeAgo}
-                        </span>
+                        <span className="text-xs text-slate-400">{timeAgo}</span>
                       </div>
-                      <div className="text-xs text-slate-300">
-                        {labelName}
-                      </div>
+                      <div className="text-xs text-slate-300">{labelName}</div>
                     </div>
                   </div>
 
@@ -474,9 +426,7 @@ export default function GroupPage() {
                     </div>
 
                     {memberText && (
-                      <div className="text-xs font-mono text-slate-200">
-                        {memberText}
-                      </div>
+                      <div className="text-xs font-mono text-slate-200">{memberText}</div>
                     )}
 
                     <div className="text-xs text-slate-400">{hpText}</div>
