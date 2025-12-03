@@ -8,7 +8,6 @@ type Poster = { sender_user_id: string | null; user_name: string | null; post_co
 type Battle = { battle_name: string; post_count: number; };
 
 export default function RaidRankingsPage() {
-  // searchParams フックを使わず、window.location を直接参照する実装に変更
   const [groupId, setGroupId] = useState<string>("");
   const [posters, setPosters] = useState<Poster[]>([]);
   const [battles, setBattles] = useState<Battle[]>([]);
@@ -18,21 +17,14 @@ export default function RaidRankingsPage() {
   const intervalRef = useRef<number | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // groupId を URL から取得（ページ読み込み時と履歴変更時に対応）
   useEffect(() => {
     function readGroupIdFromUrl() {
-      try {
-        const params = new URLSearchParams(window.location.search);
-        const g = params.get("groupId") || "";
-        setGroupId(g);
-      } catch (e) {
-        setGroupId("");
-      }
+      const params = new URLSearchParams(window.location.search);
+      setGroupId(params.get("groupId") || "");
     }
     readGroupIdFromUrl();
-    const onPop = () => readGroupIdFromUrl();
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
+    window.addEventListener("popstate", readGroupIdFromUrl);
+    return () => window.removeEventListener("popstate", readGroupIdFromUrl);
   }, []);
 
   async function fetchRankings() {
@@ -45,10 +37,8 @@ export default function RaidRankingsPage() {
       ]);
       const pj = await pRes.json();
       const bj = await bRes.json();
-      if (pj.ok) setPosters(pj.data as Poster[]);
-      else setPosters([]);
-      if (bj.ok) setBattles(bj.data as Battle[]);
-      else setBattles([]);
+      setPosters(pj.ok ? (pj.data as Poster[]) : []);
+      setBattles(bj.ok ? (bj.data as Battle[]) : []);
     } catch (e) {
       console.error(e);
     } finally {
@@ -57,7 +47,6 @@ export default function RaidRankingsPage() {
   }
 
   useEffect(() => {
-    // groupId が空の間は取得しない
     if (!groupId) return;
     fetchRankings();
     if (auto) {
@@ -67,14 +56,7 @@ export default function RaidRankingsPage() {
       if (intervalRef.current) clearInterval(intervalRef.current);
       intervalRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId, days, limit, auto]);
-
-  function anonymize(name: string | null) {
-    if (!name) return "(不明)";
-    if (name.length <= 3) return name[0] + "*".repeat(Math.max(0, name.length - 1));
-    return name.slice(0, 2) + "*".repeat(Math.min(6, name.length - 2));
-  }
 
   return (
     <div className="p-4">
@@ -107,7 +89,7 @@ export default function RaidRankingsPage() {
             {posters.length === 0 ? <li>データがありません</li> :
               posters.map((p, i) => (
                 <li key={p.sender_user_id ?? i} className="flex justify-between items-center">
-                  <div><strong>{i + 1}.</strong> {anonymize(p.user_name)}</div>
+                  <div><strong>{i + 1}.</strong> {p.user_name || "(不明)"}</div>
                   <div>{p.post_count}</div>
                 </li>
               ))
