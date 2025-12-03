@@ -8,6 +8,10 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: { persistSession: false },
 });
 
+// ===== 定数: 特殊ボスの判定 =====
+const ULT_BAHAMUT_NAME = "Lv200 アルティメットバハムート";
+const ULT_BAHAMUT_HP_THRESHOLD = 60000000; // 60,000,000
+
 // ===== ボス名ブロックリスト関連 =====
 const BOSS_BLOCKLIST_CSV_URL =
   process.env.BOSS_BLOCKLIST_CSV_URL ??
@@ -105,6 +109,45 @@ function shouldSuppressByMembers(
   return false;
 }
 
+// ===== 新規: アルティメットバハムート（HP閾値）抑制判定 =====
+// raidLike は DB レコードか POST のパラメータオブジェクト（boss_name / battle_name / hp_value 等が含まれる想定）
+function isUltimateBahamutAndLowHP(raidLike: any): boolean {
+  if (!raidLike) return false;
+
+  // ボス名は複数候補でチェック（boss_name / battle_name）
+  const bossCandidates = [
+    raidLike.battle_name,
+    raidLike.boss_name,
+    raidLike.battleName,
+    raidLike.bossName,
+    raidLike.name,
+  ];
+  const name = bossCandidates.find(
+    (v) => typeof v === "string" && v.trim().length > 0
+  );
+  if (!name) return false;
+
+  if (name !== ULT_BAHAMUT_NAME) return false;
+
+  // HP 候補（hp_value / hpValue / hp）
+  const hpCandidates = [
+    raidLike.hp_value,
+    raidLike.hpValue,
+    raidLike.hp,
+    raidLike.hpPercent, // not numeric hp but keep defensive
+  ];
+
+  for (const h of hpCandidates) {
+    const n = toNumberOrNull(h);
+    if (n === null) continue;
+    // HP が閾値以下なら true（＝抑制：非表示／挿入しない）
+    if (n <= ULT_BAHAMUT_HP_THRESHOLD) return true;
+  }
+
+  // HP 情報が無ければ抑制しない（表示）
+  return false;
+}
+
 // ===== GET: 一覧取得 =====
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -118,46 +161,68 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "groupId is required" }, { status: 400 });
   }
 
-  let query = supabase
-    .from("raids")
-    .select(
-      [
-        "id",
-        "group_id",
-        "raid_id",
-        "boss_name",
-        "battle_name",
-        "hp_value",
-        "hp_percent",
-        "member_current",
-        "member_max",
-        "user_name",
-        "created_at",
-        "sender_user_id",
-      ].join(",")
-    )
-    .eq("group_id", groupId)
-    .order("created_at", { ascending: false })
-    .limit(isNaN(Number(limitParam)) ? 50 : Number(limitParam));
+  try {
+    let query = supabase
+      .from("raids")
+      .select(
+        [
+          "id",
+          "group_id",
+          "raid_id",
+          "boss_name",
+          "battle_name",
+          "hp_value",
+          "hp_percent",
+          "member_current",
+          "member_max",
+          "user_name",
+          "created_at",
+          "sender_user_id",
+        ].join(",")
+      )
+      .eq("group_id", groupId)
+      .order("created_at", { ascending: false })
+      .limit(isNaN(Number(limitParam)) ? 50 : Number(limitParam));
 
-  if (bossName) {
-    query = query.eq("boss_name", bossName);
+    if (bossName) {
+      query = query.eq("boss_name", bossName);
+    }
+
+    // excludeUserId の扱い（sender_user_id が NULL のレコードは表示）
+    if (excludeUserId) {
+      query = query.or(
+        `sender_user_id.is.null,sender_user_id.neq.${excludeUserId}`
+      );
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error("GET /api/raids error", error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    let rows: any[] = (data ?? []) as any[];
+
+    // サーバー側で追加フィルタ：特定のボスかつ HP <= 閾値 のものを除外する
+    rows = rows.filter((r) => {
+      try {
+        if (isUltimateBahamutAndLowHP(r)) {
+          // 除外
+          return false;
+        }
+      } catch (e) {
+        // 念のための防御的エラーハンドリング
+        console.error("filter isUltimateBahamutAndLowHP error", e, r);
+      }
+      return true;
+    });
+
+    return NextResponse.json(rows);
+  } catch (e) {
+    console.error("GET /api/raids unexpected error", e);
+    return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
   }
-
-  // ★ 自分のIDだけ除外したいが、sender_user_id が NULL のレコードは表示したい
-  // -> (sender_user_id IS NULL OR sender_user_id != excludeUserId)
-  if (excludeUserId) {
-    query = query.or(`sender_user_id.is.null,sender_user_id.neq.${excludeUserId}`);
-  }
-
-  const { data, error } = await query;
-
-  if (error) {
-    console.error("GET /api/raids error", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-
-  return NextResponse.json(data ?? []);
 }
 
 // ===== POST: 1件登録 =====
@@ -216,9 +281,37 @@ export async function POST(req: NextRequest) {
     if (shouldSuppressByMembers(memberCurrent, memberMax)) {
       console.log(
         "[POST /api/raids] suppressed by member counts, skip insert",
-        { groupId, raidId, member_current: memberCurrent, member_max: memberMax }
+        {
+          groupId,
+          raidId,
+          member_current: memberCurrent,
+          member_max: memberMax,
+        }
       );
       return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
+    }
+
+    // ===== 新規: アルティメットバハムートかつ HP が閾値以下なら挿入しない =====
+    const potentialRaid = {
+      boss_name: bossName ?? null,
+      battle_name: battleName ?? null,
+      hp_value: hpValue ?? null,
+    };
+    if (isUltimateBahamutAndLowHP(potentialRaid)) {
+      console.log(
+        "[POST /api/raids] suppressed by ultimate bahamut HP threshold, skip insert",
+        {
+          groupId,
+          raidId,
+          boss_name: bossName,
+          battle_name: battleName,
+          hp_value: hpValue,
+        }
+      );
+      return NextResponse.json(
+        { ok: true, suppressedByHp: true },
+        { status: 200 }
+      );
     }
 
     // ===== 重複チェック（同じ group_id + raid_id が既にある場合はスキップ）=====
@@ -266,6 +359,7 @@ export async function POST(req: NextRequest) {
       senderUserId,
       member_current: insertRow.member_current,
       member_max: insertRow.member_max,
+      hp_value: insertRow.hp_value,
     });
 
     return NextResponse.json({ ok: true }, { status: 200 });
