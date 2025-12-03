@@ -11,12 +11,15 @@ export async function POST(req: NextRequest) {
   let payload: any = {};
   try {
     const contentType = req.headers.get("content-type") || "";
+
     if (contentType.includes("application/json")) {
       payload = await req.json();
     } else if (contentType.includes("application/x-www-form-urlencoded")) {
       const formData = await req.formData();
       const data = formData.get("data") as string;
       payload = JSON.parse(data);
+    } else {
+      return NextResponse.json({ ok: false, error: "Unsupported content type" }, { status: 400 });
     }
 
     const { error } = await supabase.from("beacons").insert([payload]);
