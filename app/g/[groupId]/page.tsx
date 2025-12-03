@@ -328,7 +328,7 @@ export default function GroupPage() {
         <header className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-xl font-bold">参戦ID共有ビューア</h1>
-            <p className="text-sm text-slate-400 mt-1">グループ: {groupId}</p>
+            <div className="text-xl font-bold text-white mt-1">グループ: {groupId}</div>
           </div>
 
           <div className="flex flex-col gap-2 sm:items-end">
@@ -376,7 +376,7 @@ export default function GroupPage() {
                 <button
                   type="button"
                   onClick={() => playNotifySound()}
-                  className="bg-slate-700 hover:bg-slate-600 text-xs px-3 py-1 rounded h-9 flex items-center min-w-[96px] whitespace-nowrap"
+                  className="bg-slate-700 hover:bg-slate-600 text-xs px-2 py-1 rounded h-9 flex items-center min-w-[48px] whitespace-nowrap"
                 >
                   音テスト
                 </button>
