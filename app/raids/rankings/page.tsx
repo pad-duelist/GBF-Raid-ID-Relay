@@ -1,4 +1,6 @@
+// app/raids/rankings/page.tsx
 "use client";
+
 import React, { useEffect, useState, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 
@@ -37,15 +39,11 @@ export default function RaidRankingsPage() {
 
   useEffect(() => {
     fetchRankings();
-    // 自動更新: 30秒間隔（必要に応じて変更）
     if (auto) {
       intervalRef.current = window.setInterval(fetchRankings, 30_000);
     }
     return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
+      if (intervalRef.current) clearInterval(intervalRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId, days, limit, auto]);
@@ -59,7 +57,6 @@ export default function RaidRankingsPage() {
   return (
     <div className="p-4">
       <h1 className="text-xl font-bold mb-3">ランキング（グループ: {groupId || "未指定"})</h1>
-
       <div className="flex items-center gap-3 mb-4">
         <label>期間(日):</label>
         <select value={days} onChange={(e) => setDays(Number(e.target.value))} className="border rounded px-2 py-1">
