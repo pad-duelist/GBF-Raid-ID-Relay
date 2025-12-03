@@ -3,11 +3,13 @@
 export const dynamic = "force-dynamic";
 
 import React, { useEffect, useState, useRef } from "react";
+import { useRouter } from "next/navigation";
 
 type Poster = { sender_user_id: string | null; user_name: string | null; post_count: number; };
 type Battle = { battle_name: string; post_count: number; };
 
 export default function RaidRankingsPage() {
+  const router = useRouter();
   const [groupId, setGroupId] = useState<string>("");
   const [posters, setPosters] = useState<Poster[]>([]);
   const [battles, setBattles] = useState<Battle[]>([]);
@@ -58,9 +60,27 @@ export default function RaidRankingsPage() {
     };
   }, [groupId, days, limit, auto]);
 
+  function handleBackToGroup() {
+    if (groupId) {
+      router.push(`/g/${encodeURIComponent(groupId)}`);
+    } else {
+      router.back();
+    }
+  }
+
   return (
     <div className="p-4 bg-slate-900 min-h-screen text-slate-50">
-      <h1 className="text-xl font-bold mb-3">ランキング（グループ: {groupId || "未指定"})</h1>
+      <div className="flex items-center justify-between mb-3">
+        <h1 className="text-xl font-bold">ランキング（グループ: {groupId || "未指定"})</h1>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleBackToGroup}
+            className="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-sm"
+          >
+            グループに戻る
+          </button>
+        </div>
+      </div>
 
       <div className="flex flex-wrap items-center gap-3 mb-4">
         {/* 期間 */}
