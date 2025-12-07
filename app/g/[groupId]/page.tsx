@@ -351,18 +351,23 @@ export default function GroupPage() {
     return raw;
   };
 
-  const hpPercentClass = (raw: number | null | undefined) => {
+  // HP に対して style を返す（指定の hex を使用）
+  const hpPercentStyle = (raw: number | null | undefined): React.CSSProperties => {
     const p = normalizePercent(raw);
-    if (p == null) return "text-slate-400";
-    if (p >= 99) return "text-red-600 font-semibold";
-    if (p >= 90) return "text-yellow-500 font-medium";
-    return "text-slate-400";
+    if (p == null) return { color: "#94a3b8" }; // slate-400
+    // 優先度に注意：上から判定
+    if (p >= 99) return { color: "#00ff00", fontWeight: 600 }; // 99%以上
+    if (p >= 90) return { color: "#bbff77", fontWeight: 500 }; // 90%以上（かつ99未満）
+    if (p <= 25) return { color: "#ff0000", fontWeight: 600 }; // 25%以下 -> 赤
+    if (p <= 50) return { color: "#ffff00", fontWeight: 500 }; // 50%以下 -> 黄色
+    return { color: "#cbd5e1" }; // default (slate-ish)
   };
 
-  const memberCountClass = (count: number | null | undefined) => {
-    if (count == null) return "text-slate-200";
-    if (count <= 2) return "text-red-600 font-semibold";
-    return "text-slate-200";
+  // 参戦者数に対して style を返す（2人以下を #00ff00）
+  const memberCountStyle = (count: number | null | undefined): React.CSSProperties => {
+    if (count == null) return { color: "#94a3b8" }; // undefined は薄め
+    if (count <= 2) return { color: "#00ff00", fontWeight: 600 };
+    return { color: "#94a3b8" }; // default
   };
   // ---------- 色付けユーティリティここまで ----------
 
@@ -547,7 +552,7 @@ export default function GroupPage() {
                     </div>
 
                     {memberText && (
-                      <div className={memberCountClass(raid.member_current) + " text-xs font-mono"}>
+                      <div style={memberCountStyle(raid.member_current)} className="text-xs font-mono">
                         {memberText}
                       </div>
                     )}
@@ -559,7 +564,7 @@ export default function GroupPage() {
                         <span className="text-slate-400 mr-2">HP 不明</span>
                       )}
                       {percentDisplay ? (
-                        <span className={hpPercentClass(percentRaw) + " text-xs font-mono"}>
+                        <span style={hpPercentStyle(percentRaw)} className="text-xs font-mono">
                           {percentDisplay}
                         </span>
                       ) : null}
