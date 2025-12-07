@@ -343,6 +343,29 @@ export default function GroupPage() {
     seenFilteredRaidIdsRef.current = currentIds;
   }, [filteredRaids, bossFilter, seriesFilter, autoCopyEnabled, addToCopied]);
 
+  // ---------- ここから色付け用ユーティリティ ----------
+  const normalizePercent = (raw: number | null | undefined): number | null => {
+    if (raw == null) return null;
+    // 小数 (0.0〜1.0) の可能性を考慮
+    if (raw <= 1) return raw * 100;
+    return raw;
+  };
+
+  const hpPercentClass = (raw: number | null | undefined) => {
+    const p = normalizePercent(raw);
+    if (p == null) return "text-slate-400";
+    if (p >= 99) return "text-red-600 font-semibold";
+    if (p >= 90) return "text-yellow-500 font-medium";
+    return "text-slate-400";
+  };
+
+  const memberCountClass = (count: number | null | undefined) => {
+    if (count == null) return "text-slate-200";
+    if (count <= 2) return "text-red-600 font-semibold";
+    return "text-slate-200";
+  };
+  // ---------- 色付けユーティリティここまで ----------
+
   return (
     <div className="min-h-screen bg-slate-900 text-slate-50 p-4">
       <div className="max-w-3xl mx-auto space-y-4">
@@ -469,13 +492,16 @@ export default function GroupPage() {
               const labelName = getDisplayName(raid);
               const imageUrl = getImageUrl(raid);
 
-              let hpText = "HP 不明";
-              if (raid.hp_value != null && raid.hp_percent != null) {
-                hpText = `${formatNumberWithComma(
-                  raid.hp_value
-                )} HP (${raid.hp_percent.toFixed(1)}%)`;
-              }
+              // HP 表示（値とパーセントを分けて色付け）
+              const percentRaw = raid.hp_percent;
+              const percentNorm = normalizePercent(percentRaw);
+              const percentDisplay =
+                percentNorm == null ? null : `${percentNorm.toFixed(1)}%`;
 
+              const hpValueDisplay =
+                raid.hp_value != null ? `${formatNumberWithComma(raid.hp_value)} HP` : null;
+
+              // 参戦者数（色を分ける）
               const memberText =
                 raid.member_current != null && raid.member_max != null
                   ? `${raid.member_current}/${raid.member_max}`
@@ -521,10 +547,23 @@ export default function GroupPage() {
                     </div>
 
                     {memberText && (
-                      <div className="text-xs font-mono text-slate-200">{memberText}</div>
+                      <div className={memberCountClass(raid.member_current) + " text-xs font-mono"}>
+                        {memberText}
+                      </div>
                     )}
 
-                    <div className="text-xs text-slate-400">{hpText}</div>
+                    <div className="text-xs">
+                      {hpValueDisplay ? (
+                        <span className="text-slate-400 mr-2">{hpValueDisplay}</span>
+                      ) : (
+                        <span className="text-slate-400 mr-2">HP 不明</span>
+                      )}
+                      {percentDisplay ? (
+                        <span className={hpPercentClass(percentRaw) + " text-xs font-mono"}>
+                          {percentDisplay}
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
               );
