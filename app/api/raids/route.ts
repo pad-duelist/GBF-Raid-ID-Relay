@@ -10,7 +10,7 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
 
 // ===== 定数: 特殊ボスの判定 =====
 const ULT_BAHAMUT_NAME = "Lv200 アルティメットバハムート";
-const ULT_BAHAMUT_HP_THRESHOLD = 60000000; // 60,000,000
+const ULT_BAHAMUT_HP_THRESHOLD = 70000000; // 70,000,000
 
 // ===== ボス名ブロックリスト関連 =====
 const BOSS_BLOCKLIST_CSV_URL =
