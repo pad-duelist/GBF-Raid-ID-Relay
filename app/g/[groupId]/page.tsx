@@ -41,7 +41,6 @@ export default function GroupPage() {
   const [seriesFilter, setSeriesFilter] = useState<string>("");
   const [copyMessage, setCopyMessage] = useState<string | null>(null);
 
-  const [lastNotifiedId, setLastNotifiedId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const [notifyEnabled, setNotifyEnabled] = useState<boolean>(true);
@@ -57,6 +56,9 @@ export default function GroupPage() {
 
   const battleMap = useBattleNameMap();
   const { map: battleMappingMap, loading: mappingLoading } = useBattleMapping();
+
+  // 前回の全レコードIDセット（差分検出用）
+  const prevAllIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -162,6 +164,7 @@ export default function GroupPage() {
     }
   };
 
+  // groupId やマッピングが変わったら再取得
   useEffect(() => {
     setLoading(true);
     fetchRaids();
@@ -218,22 +221,6 @@ export default function GroupPage() {
     audio.play().catch(() => {});
   }, [notifyEnabled, notifyVolume]);
 
-  useEffect(() => {
-    if (!raids || raids.length === 0) return;
-
-    const latestRaidId = raids[0].id;
-
-    if (lastNotifiedId === null) {
-      setLastNotifiedId(latestRaidId);
-      return;
-    }
-
-    if (latestRaidId !== lastNotifiedId) {
-      playNotifySound();
-      setLastNotifiedId(latestRaidId);
-    }
-  }, [raids, lastNotifiedId, playNotifySound]);
-
   const getDisplayName = (raid: RaidRow): string => {
     const boss = raid.boss_name?.trim() || "";
     const battle = raid.battle_name?.trim() || "";
@@ -268,7 +255,7 @@ export default function GroupPage() {
 
   const uniqueSeries = Object.keys(seriesCountMap).sort();
 
-  // 両方のフィルタを適用
+  // 両方のフィルタを適用（表示用）
   const filteredRaids = raids.filter((raid) => {
     const matchBoss = bossFilter ? getDisplayName(raid) === bossFilter : true;
     const raidSeries = (raid.series ?? "").toString().trim();
@@ -276,6 +263,40 @@ export default function GroupPage() {
     return matchBoss && matchSeries;
   });
 
+  // --- 通知ロジック（差分検出して、差分の中に現在のフィルタに合致するレコードがあれば通知） ---
+  useEffect(() => {
+    if (!raids) return;
+
+    const currentIdsSet = new Set(raids.map((r) => r.id));
+    const prev = prevAllIdsRef.current;
+
+    // 初回（prev が空）は初期化のみして通知しない
+    if (prev.size === 0) {
+      prevAllIdsRef.current = currentIdsSet;
+      return;
+    }
+
+    // 差分（新着ID）を抽出
+    const newIds = raids.filter((r) => !prev.has(r.id));
+    // 更新しておく（次回用）
+    prevAllIdsRef.current = currentIdsSet;
+
+    if (newIds.length === 0) return;
+
+    // 新着のうち、現在のフィルタに合致するものがあるか確認
+    const hasMatch = newIds.some((r) => {
+      const matchBoss = bossFilter ? getDisplayName(r) === bossFilter : true;
+      const raidSeries = (r.series ?? "").toString().trim();
+      const matchSeries = seriesFilter ? raidSeries === seriesFilter : true;
+      return matchBoss && matchSeries;
+    });
+
+    if (hasMatch) {
+      playNotifySound();
+    }
+  }, [raids, bossFilter, seriesFilter, playNotifySound]);
+
+  // --- 自動コピーのロジック（フィルタされた一覧の差分を監視） ---
   useEffect(() => {
     if (!filteredRaids || filteredRaids.length === 0) {
       seenFilteredRaidIdsRef.current = new Set();
