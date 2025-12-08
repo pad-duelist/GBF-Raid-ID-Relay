@@ -343,7 +343,6 @@ export default function GroupPage() {
     seenFilteredRaidIdsRef.current = currentIds;
   }, [filteredRaids, bossFilter, seriesFilter, autoCopyEnabled, addToCopied]);
 
-  // ---------- ここから色付け用ユーティリティ ----------
   const normalizePercent = (raw: number | null | undefined): number | null => {
     if (raw == null) return null;
     // 小数 (0.0〜1.0) の可能性を考慮
@@ -351,7 +350,6 @@ export default function GroupPage() {
     return raw;
   };
 
-  // HP に対して style を返す（指定の hex を使用）
   const hpPercentStyle = (raw: number | null | undefined): React.CSSProperties => {
     const p = normalizePercent(raw);
     if (p == null) return { color: "#94a3b8" }; // slate-400
@@ -369,14 +367,13 @@ export default function GroupPage() {
     if (count <= 2) return { color: "#00ff00", fontWeight: 600 };
     return { color: "#94a3b8" }; // default
   };
-  // ---------- 色付けユーティリティここまで ----------
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-50 p-4">
       <div className="max-w-3xl mx-auto space-y-4">
         <header className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-xl font-bold">参戦ID共有ビューア</h1>
+            <h1 className="text-xl font-bold">GBF Raid ID Relay</h1>
             <div className="text-xl font-bold text-white mt-1">グループ: {groupId}</div>
           </div>
 
