@@ -376,7 +376,7 @@ export default function GroupPage() {
       <div className="max-w-3xl mx-auto space-y-4">
         <header className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-xl font-bold">参戦ID共有ビューア</h1>
+            <h1 className="text-xl font-bold">GBF Raid ID Relay</h1>
             <div className="text-xl font-bold text-white mt-1">グループ: {groupId}</div>
           </div>
 
