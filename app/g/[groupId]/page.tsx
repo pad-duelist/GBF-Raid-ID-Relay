@@ -376,7 +376,7 @@ export default function GroupPage() {
       <div className="max-w-3xl mx-auto space-y-4">
         <header className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-xl font-bold">GBF Raid ID Relay</h1>
+            <h1 className="text-xl font-bold">参戦ID共有ビューア</h1>
             <div className="text-xl font-bold text-white mt-1">グループ: {groupId}</div>
           </div>
 
@@ -503,8 +503,8 @@ export default function GroupPage() {
               const percentDisplay =
                 percentNorm == null ? null : `${percentNorm.toFixed(1)}%`;
 
-              const hpValueDisplay =
-                raid.hp_value != null ? `${formatNumberWithComma(raid.hp_value)} HP` : null;
+              // hpValueNumber は数値のみ。null の場合は未表示扱い。
+              const hpValueNumber = raid.hp_value != null ? raid.hp_value : null;
 
               // 参戦者数（色を分ける）
               const memberText =
@@ -558,8 +558,11 @@ export default function GroupPage() {
                     )}
 
                     <div className="text-xs">
-                      {hpValueDisplay ? (
-                        <span className="text-slate-400 mr-2">{hpValueDisplay}</span>
+                      {hpValueNumber != null ? (
+                        // HP の数値と "HP" を両方同じ色で表示する（percent の判定を使用）
+                        <span style={hpPercentStyle(percentRaw)} className="mr-2 font-mono">
+                          {formatNumberWithComma(hpValueNumber)} HP
+                        </span>
                       ) : (
                         <span className="text-slate-400 mr-2">HP 不明</span>
                       )}
