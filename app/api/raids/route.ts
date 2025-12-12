@@ -21,7 +21,131 @@ let bossBlockList: Set<string> | null = null;
 let lastBossBlockListFetched = 0;
 const BOSS_BLOCKLIST_TTL = 5 * 60 * 1000; // 5分
 
-function normalizeBossName(name: string): string {
+// ===== ボス名マップ（公開CSV）取得キャッシュ =====
+const BOSS_MAP_CSV_URL = process.env.BOSS_MAP_CSV_URL ?? process.env.NEXT_PUBLIC_BOSS_MAP_CSV_URL;
+let bossMapCache: { map: Record<string, string>; sortedKeys: string[] } | null = null;
+let lastBossMapFetched = 0;
+const BOSS_MAP_TTL = 5 * 60 * 1000; // 5分
+
+// --- 文字列正規化（同期） ---
+function toHalfwidthAndLower(s: string) {
+  return s.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+}
+function removeCommonNoise(s: string) {
+  let out = s.replace(/\(.*?\)|（.*?）/g, "");
+  out = out.replace(/(no\.?\s?\d+|\#\d+|\d+番?)$/i, "");
+  out = out.replace(/[\/:;「」『』"“”'’‘、。,・\-\—]/g, "");
+  out = out.replace(/\s+/g, " ").trim();
+  return out;
+}
+function normalizeKey(raw: string) {
+  return removeCommonNoise(toHalfwidthAndLower(raw || ""));
+}
+
+// --- CSV から作られた map を取得（キャッシュ付き） ---
+async function fetchBossNameMapCached(force = false): Promise<{ map: Record<string, string>; sortedKeys: string[] }> {
+  const now = Date.now();
+  if (!force && bossMapCache && now - lastBossMapFetched < BOSS_MAP_TTL) {
+    return bossMapCache;
+  }
+
+  const empty = { map: {} as Record<string, string>, sortedKeys: [] as string[] };
+  if (!BOSS_MAP_CSV_URL) {
+    bossMapCache = empty;
+    lastBossMapFetched = now;
+    return bossMapCache;
+  }
+
+  try {
+    // no-store on force to ensure fresh
+    const res = await fetch(BOSS_MAP_CSV_URL, force ? { cache: "no-store" } : undefined);
+    if (!res.ok) {
+      console.error("[boss map] CSV fetch failed", res.status, res.statusText);
+      bossMapCache = empty;
+      lastBossMapFetched = now;
+      return bossMapCache;
+    }
+    const text = await res.text();
+    // simple CSV parse: try header first (before,after)
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (lines.length <= 1) {
+      bossMapCache = empty;
+      lastBossMapFetched = now;
+      return bossMapCache;
+    }
+    // detect header columns
+    const header = lines[0].split(",").map(h => h.trim().toLowerCase());
+    const beforeIdx = header.indexOf("before");
+    const afterIdx = header.indexOf("after");
+    const map: Record<string, string> = {};
+    if (beforeIdx !== -1 && afterIdx !== -1) {
+      for (let i = 1; i < lines.length; i++) {
+        const cols = splitCsvLine(lines[i]);
+        const before = (cols[beforeIdx] ?? "").trim();
+        const after = (cols[afterIdx] ?? "").trim();
+        if (before && after) {
+          const key = normalizeKey(before);
+          map[key] = after;
+        }
+      }
+    } else {
+      // fallback: assume two columns (before,after)
+      for (let i = 1; i < lines.length; i++) {
+        const cols = splitCsvLine(lines[i]);
+        const before = (cols[0] ?? "").trim();
+        const after = (cols[1] ?? "").trim();
+        if (before && after) {
+          const key = normalizeKey(before);
+          map[key] = after;
+        }
+      }
+    }
+    const sortedKeys = Object.keys(map).sort((a, b) => b.length - a.length);
+    bossMapCache = { map, sortedKeys };
+    lastBossMapFetched = now;
+    return bossMapCache;
+  } catch (e) {
+    console.error("[boss map] fetch error", e);
+    bossMapCache = empty;
+    lastBossMapFetched = now;
+    return bossMapCache;
+  }
+}
+
+function splitCsvLine(line: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let inQuote = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuote && line[i + 1] === '"') { cur += '"'; i++; continue; }
+      inQuote = !inQuote;
+      continue;
+    }
+    if (ch === ',' && !inQuote) {
+      out.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+
+// --- mapping を使った正規化（async） ---
+async function mapNormalize(raw: string | null | undefined, forceFetch = false): Promise<string> {
+  const s = raw ?? "";
+  const key = normalizeKey(s);
+  const { map } = await fetchBossNameMapCached(forceFetch);
+  if (map && key in map) return map[key];
+  return (s || "").trim();
+}
+
+// ===== 現行：normalizeBossName（従来のブロックリスト用） =====
+// 既存のブロックリスト処理では単純 trim を行っているためここは維持
+function normalizeBossNameForBlocklist(name: string): string {
   return name.trim();
 }
 
@@ -59,7 +183,7 @@ async function loadBossBlockList(): Promise<Set<string>> {
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("#")) continue;
-      set.add(normalizeBossName(trimmed));
+      set.add(normalizeBossNameForBlocklist(trimmed));
     }
   } catch (e) {
     console.error("[boss blocklist] 取得エラー", e);
@@ -75,7 +199,7 @@ async function isBlockedBoss(
 ): Promise<boolean> {
   if (!bossName) return false;
   const list = await loadBossBlockList();
-  return list.has(normalizeBossName(bossName));
+  return list.has(normalizeBossNameForBlocklist(bossName));
 }
 
 function toNumberOrNull(v: any): number | null {
@@ -110,11 +234,10 @@ function shouldSuppressByMembers(
 }
 
 // ===== 新規: アルティメットバハムート（HP閾値）抑制判定 =====
-// raidLike は DB レコードか POST のパラメータオブジェクト（boss_name / battle_name / hp_value 等が含まれる想定）
-function isUltimateBahamutAndLowHP(raidLike: any): boolean {
+// 非同期化：mapNormalize を使って代表名で判定する
+async function isUltimateBahamutAndLowHP(raidLike: any): Promise<boolean> {
   if (!raidLike) return false;
 
-  // ボス名は複数候補でチェック（boss_name / battle_name）
   const bossCandidates = [
     raidLike.battle_name,
     raidLike.boss_name,
@@ -122,29 +245,27 @@ function isUltimateBahamutAndLowHP(raidLike: any): boolean {
     raidLike.bossName,
     raidLike.name,
   ];
-  const name = bossCandidates.find(
+  const rawName = bossCandidates.find(
     (v) => typeof v === "string" && v.trim().length > 0
   );
-  if (!name) return false;
+  if (!rawName) return false;
 
-  if (name !== ULT_BAHAMUT_NAME) return false;
+  const normalizedName = await mapNormalize(rawName);
 
-  // HP 候補（hp_value / hpValue / hp）
+  if (normalizedName !== ULT_BAHAMUT_NAME) return false;
+
   const hpCandidates = [
     raidLike.hp_value,
     raidLike.hpValue,
     raidLike.hp,
-    raidLike.hpPercent, // not numeric hp but keep defensive
+    raidLike.hpPercent,
   ];
 
   for (const h of hpCandidates) {
     const n = toNumberOrNull(h);
     if (n === null) continue;
-    // HP が閾値以下なら true（＝抑制：非表示／挿入しない）
     if (n <= ULT_BAHAMUT_HP_THRESHOLD) return true;
   }
-
-  // HP 情報が無ければ抑制しない（表示）
   return false;
 }
 
@@ -153,7 +274,7 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
 
   const groupId = searchParams.get("groupId");
-  const bossName = searchParams.get("bossName");
+  const bossNameParam = searchParams.get("bossName");
   const limitParam = searchParams.get("limit");
   const excludeUserId = searchParams.get("excludeUserId");
 
@@ -184,8 +305,10 @@ export async function GET(req: NextRequest) {
       .order("created_at", { ascending: false })
       .limit(isNaN(Number(limitParam)) ? 50 : Number(limitParam));
 
-    if (bossName) {
-      query = query.eq("boss_name", bossName);
+    // bossName が指定された場合は mapNormalize を使って統一名に変換して検索する
+    if (bossNameParam) {
+      const normalizedBossNameParam = await mapNormalize(bossNameParam);
+      query = query.eq("boss_name", normalizedBossNameParam);
     }
 
     // excludeUserId の扱い（sender_user_id が NULL のレコードは表示）
@@ -205,18 +328,20 @@ export async function GET(req: NextRequest) {
     let rows: any[] = (data ?? []) as any[];
 
     // サーバー側で追加フィルタ：特定のボスかつ HP <= 閾値 のものを除外する
-    rows = rows.filter((r) => {
+    // 非同期チェックを含むため filter を async-aware に実行
+    const filteredRows: any[] = [];
+    for (const r of rows) {
       try {
-        if (isUltimateBahamutAndLowHP(r)) {
+        if (await isUltimateBahamutAndLowHP(r)) {
           // 除外
-          return false;
+          continue;
         }
       } catch (e) {
-        // 念のための防御的エラーハンドリング
         console.error("filter isUltimateBahamutAndLowHP error", e, r);
       }
-      return true;
-    });
+      filteredRows.push(r);
+    }
+    rows = filteredRows;
 
     return NextResponse.json(rows);
   } catch (e) {
@@ -246,8 +371,8 @@ export async function POST(req: NextRequest) {
     const groupId = body.groupId ?? body.group_id;
     const raidId = body.raidId ?? body.raid_id;
 
-    const bossName = body.bossName ?? body.boss_name;
-    const battleName = body.battleName ?? body.battle_name;
+    let bossName = body.bossName ?? body.boss_name;
+    let battleName = body.battleName ?? body.battle_name;
 
     const hpValue = body.hpValue ?? body.hp_value;
     const hpPercent = body.hpPercent ?? body.hp_percent;
@@ -263,6 +388,16 @@ export async function POST(req: NextRequest) {
         { error: "groupId and raidId are required" },
         { status: 400 }
       );
+    }
+
+    // ===== ここで bossName / battleName を統一名に変換してから扱う =====
+    try {
+      bossName = (await mapNormalize(bossName)) || (bossName ?? null);
+      battleName = (await mapNormalize(battleName)) || (battleName ?? null);
+    } catch (e) {
+      console.error("mapNormalize error, falling back to raw", e);
+      bossName = bossName ?? null;
+      battleName = battleName ?? null;
     }
 
     // ===== ボスブロックリスト判定 =====
@@ -297,7 +432,7 @@ export async function POST(req: NextRequest) {
       battle_name: battleName ?? null,
       hp_value: hpValue ?? null,
     };
-    if (isUltimateBahamutAndLowHP(potentialRaid)) {
+    if (await isUltimateBahamutAndLowHP(potentialRaid)) {
       console.log(
         "[POST /api/raids] suppressed by ultimate bahamut HP threshold, skip insert",
         {
