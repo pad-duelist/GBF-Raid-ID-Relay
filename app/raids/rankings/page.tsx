@@ -5,7 +5,13 @@ export const dynamic = "force-dynamic";
 import React, { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 
-type Poster = { sender_user_id: string | null; user_name: string | null; post_count: number; };
+type Poster = {
+  user_id: string | null;
+  user_id_text: string;
+  last_used_name: string | null;
+  post_count: number;
+  last_post_at?: string | null;
+};
 type Battle = { battle_name: string; post_count: number; };
 
 export default function RaidRankingsPage() {
@@ -33,16 +39,33 @@ export default function RaidRankingsPage() {
     if (!groupId) return;
     setLoading(true);
     try {
-      const [pRes, bRes] = await Promise.all([
-        fetch(`/api/raids/rank/top-posters?group_id=${encodeURIComponent(groupId)}&days=${days}&limit=${limit}`),
-        fetch(`/api/raids/rank/top-battles?group_id=${encodeURIComponent(groupId)}&days=${days}&limit=${limit}`)
-      ]);
-      const pj = await pRes.json();
-      const bj = await bRes.json();
-      setPosters(pj.ok ? (pj.data as Poster[]) : []);
-      setBattles(bj.ok ? (bj.data as Battle[]) : []);
+      // poster-ranking API を呼ぶ（存在する API）
+      const pRes = await fetch(
+        `/api/poster-ranking?group_id=${encodeURIComponent(groupId)}&days=${days}&limit=${limit}`
+      );
+      // 旧コードで呼んでいた top-battles は存在しないとのことなので例外的に空にする
+      // 将来 API があればここを差し替えてください
+      let bResData: Battle[] = [];
+
+      const pj = await pRes.json().catch(() => null);
+
+      if (pj && Array.isArray(pj.data)) {
+        // route.ts は { data } を返す想定
+        setPosters(pj.data as Poster[]);
+      } else if (pj && pj.error) {
+        console.error("poster-ranking API error:", pj.error);
+        setPosters([]);
+      } else {
+        // 想定外のレスポンス
+        console.warn("unexpected poster-ranking response:", pj);
+        setPosters([]);
+      }
+
+      setBattles(bResData);
     } catch (e) {
       console.error(e);
+      setPosters([]);
+      setBattles([]);
     } finally {
       setLoading(false);
     }
@@ -52,12 +75,19 @@ export default function RaidRankingsPage() {
     if (!groupId) return;
     fetchRankings();
     if (auto) {
+      // intervalRef を安全に扱う
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
       intervalRef.current = window.setInterval(fetchRankings, 30_000) as unknown as number;
     }
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
       intervalRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId, days, limit, auto]);
 
   function handleBackToGroup() {
@@ -83,7 +113,6 @@ export default function RaidRankingsPage() {
       </div>
 
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        {/* 期間 */}
         <label className="text-white">期間(日):</label>
         <select
           value={days}
@@ -96,7 +125,6 @@ export default function RaidRankingsPage() {
           <option value={365}>全期間</option>
         </select>
 
-        {/* 表示数 */}
         <label className="text-white">表示数:</label>
         <input
           type="number"
@@ -107,7 +135,6 @@ export default function RaidRankingsPage() {
           className="w-20 border rounded px-2 py-1 text-black"
         />
 
-        {/* 自動更新 */}
         <label className="text-white flex items-center gap-1">
           <input
             type="checkbox"
@@ -135,12 +162,21 @@ export default function RaidRankingsPage() {
             {posters.length === 0 ? (
               <li>データがありません</li>
             ) : (
-              posters.map((p, i) => (
-                <li key={p.sender_user_id ?? i} className="flex justify-between items-center bg-slate-800 rounded px-2 py-1">
-                  <div><strong>{i + 1}.</strong> {p.user_name || "(不明)"}</div>
-                  <div>{p.post_count}</div>
-                </li>
-              ))
+              posters.map((p, i) => {
+                // 安定した key を生成：可能なら user_id を使い、なければ user_id_text+index を使う
+                const safeKey = p.user_id ?? `${p.user_id_text ?? "anonymous"}-${i}`;
+                const displayName = p.last_used_name ?? p.user_id_text ?? "(不明)";
+                return (
+                  <li key={safeKey} className="flex justify-between items-center bg-slate-800 rounded px-2 py-1">
+                    <div>
+                      <strong>{i + 1}.</strong> {displayName}
+                      {/* デバッグ表示: ID をすぐ確認したいときに有効（運用時は削除可） */}
+                      <span className="ml-2 text-xs text-gray-400">[{p.user_id ?? "no-id"}]</span>
+                    </div>
+                    <div>{p.post_count}</div>
+                  </li>
+                );
+              })
             )}
           </ol>
         </section>
