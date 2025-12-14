@@ -55,7 +55,7 @@ export default function RaidRankingsPage() {
     setInitialized(true);
   }, []);
 
-  // ✅ 戻る先を常にグループページに固定
+  // ✅ 戻る先は常にグループページ固定
   const handleBack = useCallback(() => {
     const g = groupId.trim();
     if (g) router.push(`/g/${encodeURIComponent(g)}`);
@@ -116,10 +116,14 @@ export default function RaidRankingsPage() {
 
   return (
     <div style={{ padding: 16, color: "white", maxWidth: 980, margin: "0 auto" }}>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+      {/* ヘッダー：右上に戻るボタン */}
+      <div style={{ position: "relative", paddingRight: 160 }}>
         <button
           onClick={handleBack}
           style={{
+            position: "absolute",
+            top: 0,
+            right: 0,
             padding: "9px 12px",
             borderRadius: 10,
             border: "1px solid rgba(255,255,255,0.2)",
@@ -127,6 +131,7 @@ export default function RaidRankingsPage() {
             color: "white",
             cursor: "pointer",
             fontWeight: 800,
+            whiteSpace: "nowrap",
           }}
         >
           ← グループへ戻る
@@ -134,7 +139,15 @@ export default function RaidRankingsPage() {
 
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800 }}>ランキング</h1>
 
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+        <div
+          style={{
+            marginTop: 10,
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 10,
+            alignItems: "center",
+          }}
+        >
           <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <span style={{ opacity: 0.9 }}>グループ</span>
             <input
@@ -212,16 +225,17 @@ export default function RaidRankingsPage() {
               color: "white",
               cursor: "pointer",
               fontWeight: 800,
+              whiteSpace: "nowrap",
             }}
           >
             手動更新
           </button>
         </div>
-      </div>
 
-      <div style={{ marginTop: 8, opacity: 0.85, fontSize: 12 }}>
-        {loading ? "更新中…" : data ? `生成: ${data.generated_at}` : ""}
-        {error ? ` / エラー: ${error}` : ""}
+        <div style={{ marginTop: 8, opacity: 0.85, fontSize: 12 }}>
+          {loading ? "更新中…" : data ? `生成: ${data.generated_at}` : ""}
+          {error ? ` / エラー: ${error}` : ""}
+        </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
