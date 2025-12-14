@@ -304,8 +304,24 @@ async function mapNormalize(name: string | null | undefined): Promise<string | n
   return raw;
 }
 
-// ===== 参戦者数抑制（必要なら後で拡張） =====
-function shouldSuppressByMembers(_memberCurrent: any, _memberMax: any): boolean {
+// ===== 参戦者数抑制（復活） =====
+function toIntOrNull(v: any): number | null {
+  if (v === null || v === undefined) return null;
+  const n = typeof v === "number" ? v : Number(String(v).trim());
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+
+// - 6/6 を非表示
+// - 18人マルチは 10/18 以上を非表示
+// - 30人マルチは 10/30 以上を非表示
+function shouldSuppressByMembers(memberCurrent: any, memberMax: any): boolean {
+  const cur = toIntOrNull(memberCurrent);
+  const max = toIntOrNull(memberMax);
+  if (cur === null || max === null) return false;
+
+  if (max === 6 && cur === 6) return true;
+  if (max === 18 && cur >= 10) return true;
+  if (max === 30 && cur >= 10) return true;
   return false;
 }
 
@@ -386,8 +402,13 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
+    // 参戦者数抑制（一覧取得でも除外して返す）
+    const filtered = (data ?? []).filter(
+      (r: any) => !shouldSuppressByMembers(r?.member_current, r?.member_max)
+    );
+
     // created_at をJSTのISO(+09:00)へ差し替えて返す
-    const rows = (data ?? []).map((r: any) => ({
+    const rows = filtered.map((r: any) => ({
       ...r,
       created_at: toJstIsoString(r?.created_at),
     }));
@@ -426,14 +447,14 @@ export async function POST(req: NextRequest) {
     const userName = body.userName ?? body.user_name;
     const senderUserId = body.senderUserId ?? body.sender_user_id;
 
-    const memberCurrent = body.memberCurrent ?? body.member_current;
-    const memberMax = body.memberMax ?? body.member_max;
+    // 参戦者数
+    const memberCurrent = body.memberCurrent ?? body.member_current ?? null;
+    const memberMax = body.memberMax ?? body.member_max ?? null;
 
     if (!groupIdParam || !raidId) {
       return NextResponse.json({ error: "groupId and raidId are required" }, { status: 400 });
     }
 
-    // senderUserId が無い投稿は拒否（グループ外からのPOSTを防ぐ）
     if (!senderUserId) {
       return NextResponse.json({ error: "senderUserId is required" }, { status: 401 });
     }
@@ -453,24 +474,18 @@ export async function POST(req: NextRequest) {
 
     const matchedGroupId = mem.matchedGroupId;
 
-    // bossName / battleName を統一名に変換
-    try {
-      bossName = (await mapNormalize(bossName)) || (bossName ?? null);
-      battleName = (await mapNormalize(battleName)) || (battleName ?? null);
-    } catch (e) {
-      console.error("mapNormalize error, falling back to raw", e);
-      bossName = bossName ?? null;
-      battleName = battleName ?? null;
-    }
+    // bossName / battleName をCSVマッピングで正規化
+    bossName = await mapNormalize(bossName);
+    battleName = await mapNormalize(battleName);
 
-    // ブロックリスト判定
+    // ブロックリスト
     const bossBlocked = await isBossBlocked(bossName);
     const battleBlocked = await isBossBlocked(battleName);
     if (bossBlocked || battleBlocked) {
       return NextResponse.json({ ok: true, blocked: true }, { status: 200 });
     }
 
-    // 参戦者数抑制
+    // 参戦者数抑制（復活）
     if (shouldSuppressByMembers(memberCurrent, memberMax)) {
       return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
     }
@@ -502,12 +517,12 @@ export async function POST(req: NextRequest) {
         member_current: memberCurrent == null ? null : Number(memberCurrent),
         member_max: memberMax == null ? null : Number(memberMax),
         user_name: userName ?? null,
-        sender_user_id: senderUserId ?? null,
+        sender_user_id: senderUserId,
       },
     ]);
 
     if (error) {
-      console.error("[POST /api/raids] insert error:", error);
+      console.error("[POST /api/raids] supabase error:", error);
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
