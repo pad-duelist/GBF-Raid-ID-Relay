@@ -31,13 +31,11 @@ const cardStyle: React.CSSProperties = {
   padding: 12,
 };
 
-// ここで「同一ユーザーとして扱うID」を定義
 const MERGE_IDS = new Set([
   "86f9ace9-dad7-4daa-9c28-adb44759c252",
   "8cf84c8f-2052-47fb-a3a9-cf7f2980eef4",
 ]);
 
-// 代表ID（同一ユーザーとして表示する際のID）
 const CANONICAL_ID = "8cf84c8f-2052-47fb-a3a9-cf7f2980eef4";
 
 function mergePosters(posters: Poster[]): Poster[] {
@@ -45,10 +43,6 @@ function mergePosters(posters: Poster[]): Poster[] {
 
   const normalize = (id: string) => (MERGE_IDS.has(id) ? CANONICAL_ID : id);
 
-  // namePriority:
-  //  - 2: 代表IDの名前（最優先）
-  //  - 1: 非代表IDの名前
-  //  - 0: 空
   const namePriority = (p: Poster) => {
     const hasName = !!(p.user_name && p.user_name.trim());
     if (!hasName) return 0;
@@ -62,8 +56,8 @@ function mergePosters(posters: Poster[]): Poster[] {
 
   for (const p of posters) {
     const nid = normalize(p.sender_user_id);
-
     const cur = map.get(nid);
+
     if (!cur) {
       map.set(nid, {
         sender_user_id: nid,
@@ -74,10 +68,8 @@ function mergePosters(posters: Poster[]): Poster[] {
       continue;
     }
 
-    // count合算
     cur.post_count += p.post_count;
 
-    // 表示名は「代表IDの名前」優先（空なら他IDの名前）
     const pr = namePriority(p);
     if (pr > cur._namePrio) {
       cur.user_name = p.user_name;
@@ -88,10 +80,7 @@ function mergePosters(posters: Poster[]): Poster[] {
   }
 
   const merged = Array.from(map.values()).map(({ _namePrio, ...rest }) => rest);
-
-  // もともとの表示と同様に post_count 降順
   merged.sort((a, b) => b.post_count - a.post_count);
-
   return merged;
 }
 
@@ -108,7 +97,6 @@ export default function RaidRankingsPage() {
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>("");
 
-  // URL: /raids/rankings?groupId=Apoklisi
   useEffect(() => {
     const sp = new URLSearchParams(window.location.search);
     const g = (sp.get("groupId") ?? sp.get("group") ?? "").trim();
@@ -116,7 +104,6 @@ export default function RaidRankingsPage() {
     setInitialized(true);
   }, []);
 
-  // 戻る先は常にグループページ固定
   const handleBack = useCallback(() => {
     const g = groupId.trim();
     if (g) router.push(`/g/${encodeURIComponent(g)}`);
@@ -128,13 +115,15 @@ export default function RaidRankingsPage() {
 
     setLoading(true);
     setError("");
+
     try {
+      // ★ 結合で件数が減るので、取得時は少し多めに取る（表示は最終的にlimit件）
+      const fetchLimit = Math.min(200, Math.max(1, limit + 5));
+
       const qs = new URLSearchParams();
       qs.set("days", String(days));
-      qs.set("limit", String(limit));
+      qs.set("limit", String(fetchLimit));
       if (groupId.trim()) qs.set("groupId", groupId.trim());
-
-      // キャッシュ回避
       qs.set("_t", String(Date.now()));
 
       const res = await fetch(`/api/rankings?${qs.toString()}`, { cache: "no-store" });
@@ -145,10 +134,11 @@ export default function RaidRankingsPage() {
 
       const j = (await res.json()) as ApiResponse;
 
-      // ★ここで2IDを同一ユーザーとして統合
       const mergedPosters = mergePosters(j.posters ?? []);
+      const postersFixed = mergedPosters.slice(0, Math.max(1, limit));
 
-      setData({ ...j, posters: mergedPosters });
+      // 表示上のlimitはユーザー入力のlimitに合わせる
+      setData({ ...j, limit, posters: postersFixed });
     } catch (e: any) {
       setError(e?.message ?? String(e));
       setData(null);
@@ -157,7 +147,6 @@ export default function RaidRankingsPage() {
     }
   }, [initialized, days, limit, groupId]);
 
-  // 初回だけ自動で1回取得
   useEffect(() => {
     if (!initialized) return;
     fetchRankings();
@@ -165,7 +154,6 @@ export default function RaidRankingsPage() {
 
   return (
     <div style={{ padding: 16, color: "white", maxWidth: 980, margin: "0 auto" }}>
-      {/* ヘッダー：右上に戻るボタン */}
       <div style={{ position: "relative", paddingRight: 160 }}>
         <button
           onClick={handleBack}
@@ -197,7 +185,6 @@ export default function RaidRankingsPage() {
             alignItems: "center",
           }}
         >
-          {/* グループは表示専用（選択不可） */}
           <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
             <span style={{ opacity: 0.9 }}>グループ</span>
             <span
@@ -274,12 +261,8 @@ export default function RaidRankingsPage() {
           </button>
         </div>
 
-        {error ? (
-          <div style={{ marginTop: 8, opacity: 0.9, fontSize: 12 }}>エラー: {error}</div>
-        ) : null}
-        {loading ? (
-          <div style={{ marginTop: 8, opacity: 0.75, fontSize: 12 }}>更新中…</div>
-        ) : null}
+        {error ? <div style={{ marginTop: 8, opacity: 0.9, fontSize: 12 }}>エラー: {error}</div> : null}
+        {loading ? <div style={{ marginTop: 8, opacity: 0.75, fontSize: 12 }}>更新中…</div> : null}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
