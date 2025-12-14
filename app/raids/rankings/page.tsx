@@ -1,15 +1,13 @@
-// app/raids/rankings/page.tsx
 "use client";
 export const dynamic = "force-dynamic";
 
-import React, { useEffect, useState, useRef } from "react";
-import { useRouter } from "next/navigation";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 type Poster = {
-  sender_user_id: string | null; // 表示はしない（キー用途）
-  user_name: string | null; // API側で「最後に使った名前」を返す前提
+  sender_user_id: string;
+  user_name: string | null;
   post_count: number;
-  last_used_at?: string | null; // 任意（返ってきても表示はしない）
 };
 
 type Battle = {
@@ -17,219 +15,252 @@ type Battle = {
   post_count: number;
 };
 
-function toInt(v: string, def: number) {
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.floor(n) : def;
-}
+type ApiResponse = {
+  days: number;
+  limit: number;
+  groupId: string;
+  posters: Poster[];
+  battles: Battle[];
+  generated_at: string;
+};
 
-function shortId(id: string, head = 8): string {
-  if (!id) return "";
-  return id.length <= head ? id : `${id.slice(0, head)}…`;
-}
-
-function displayPosterName(p: Poster): string {
-  const name = (p.user_name ?? "").trim();
-  if (name) return name;
-
-  const uid = (p.sender_user_id ?? "").trim();
-  if (uid) return `(不明: ${shortId(uid)})`;
-  return "(不明)";
-}
+const cardStyle: React.CSSProperties = {
+  background: "#111827",
+  border: "1px solid rgba(255,255,255,0.12)",
+  borderRadius: 12,
+  padding: 12,
+};
 
 export default function RaidRankingsPage() {
-  const router = useRouter();
+  const sp = useSearchParams();
 
-  const [groupId, setGroupId] = useState<string>("");
-  const [posters, setPosters] = useState<Poster[]>([]);
-  const [battles, setBattles] = useState<Battle[]>([]);
+  // 現行URL互換：?groupId= を最優先で拾う
+  const initialGroupId = useMemo(() => {
+    return (sp.get("groupId") ?? sp.get("group") ?? "").trim();
+  }, [sp]);
+
+  const [groupId, setGroupId] = useState<string>(initialGroupId);
   const [days, setDays] = useState<number>(7);
   const [limit, setLimit] = useState<number>(10);
   const [auto, setAuto] = useState<boolean>(true);
-  const intervalRef = useRef<number | null>(null);
-  const [loading, setLoading] = useState(false);
 
-  // URL クエリから groupId を読む（?groupId=xxxx）
-  useEffect(() => {
-    const readGroupIdFromUrl = () => {
-      const params = new URLSearchParams(window.location.search);
-      setGroupId(params.get("groupId") || "");
-    };
+  const [data, setData] = useState<ApiResponse | null>(null);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string>("");
 
-    readGroupIdFromUrl();
-    window.addEventListener("popstate", readGroupIdFromUrl);
-    return () => window.removeEventListener("popstate", readGroupIdFromUrl);
-  }, []);
+  const timerRef = useRef<number | null>(null);
 
-  async function fetchRankings() {
-    if (!groupId) return;
-
+  const fetchRankings = useCallback(async () => {
     setLoading(true);
+    setError("");
     try {
-      const fetchLimit = Math.min(Math.max(limit * 5, limit), 50);
+      const qs = new URLSearchParams();
+      qs.set("days", String(days));
+      qs.set("limit", String(limit));
+      if (groupId.trim()) qs.set("groupId", groupId.trim()); // ★ここ重要（URL互換）
 
-      const [pRes, bRes] = await Promise.all([
-        fetch(
-          `/api/raids/rank/top-posters?group_id=${encodeURIComponent(
-            groupId
-          )}&days=${days}&limit=${fetchLimit}`,
-          { cache: "no-store" }
-        ),
-        fetch(
-          `/api/raids/rank/top-battles?group_id=${encodeURIComponent(
-            groupId
-          )}&days=${days}&limit=${fetchLimit}`,
-          { cache: "no-store" }
-        ),
-      ]);
+      const res = await fetch(`/api/rankings?${qs.toString()}`, { cache: "no-store" });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.details || `HTTP ${res.status}`);
+      }
 
-      const pj = await pRes.json();
-      const bj = await bRes.json();
-
-      const rawPosters: Poster[] = pj?.ok ? (pj.data as Poster[]) : [];
-      const rawBattles: Battle[] = bj?.ok ? (bj.data as Battle[]) : [];
-
-      // APIが統合済み・最新名確定済み想定。念のため並び＆limit適用。
-      const nextPosters = [...rawPosters]
-        .sort((a, b) => (b.post_count ?? 0) - (a.post_count ?? 0))
-        .slice(0, limit);
-
-      const nextBattles = [...rawBattles]
-        .sort((a, b) => (b.post_count ?? 0) - (a.post_count ?? 0))
-        .slice(0, limit);
-
-      setPosters(nextPosters);
-      setBattles(nextBattles);
-    } catch (e) {
-      console.error(e);
+      const j = (await res.json()) as ApiResponse;
+      setData(j);
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
+      setData(null);
     } finally {
       setLoading(false);
     }
-  }
+  }, [days, limit, groupId]);
 
   useEffect(() => {
-    if (!groupId) return;
-
     fetchRankings();
+  }, [fetchRankings]);
 
-    if (auto) {
-      intervalRef.current = window.setInterval(fetchRankings, 30_000) as unknown as number;
+  useEffect(() => {
+    if (timerRef.current) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
     }
+    if (!auto) return;
+
+    timerRef.current = window.setInterval(() => {
+      fetchRankings();
+    }, 10_000);
 
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      intervalRef.current = null;
+      if (timerRef.current) window.clearInterval(timerRef.current);
+      timerRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupId, days, limit, auto]);
-
-  function handleBackToGroup() {
-    if (groupId) {
-      router.push(`/g/${encodeURIComponent(groupId)}`);
-    } else {
-      router.back();
-    }
-  }
+  }, [auto, fetchRankings]);
 
   return (
-    <div className="p-4 bg-slate-900 min-h-screen text-slate-50">
-      <div className="flex items-center justify-between mb-3">
-        <h1 className="text-xl font-bold">
-          ランキング（グループ: {groupId || "未指定"}）
-        </h1>
+    <div style={{ padding: 16, color: "white", maxWidth: 980, margin: "0 auto" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800 }}>ランキング</h1>
 
-        <button
-          onClick={handleBackToGroup}
-          className="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-sm"
-        >
-          グループに戻る
-        </button>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span style={{ opacity: 0.9 }}>グループ</span>
+            <input
+              value={groupId}
+              onChange={(e) => setGroupId(e.target.value)}
+              placeholder="group_id(UUID) または group_name"
+              style={{
+                width: 320,
+                padding: "8px 10px",
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.15)",
+                background: "#0b1220",
+                color: "white",
+              }}
+            />
+          </label>
+
+          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span style={{ opacity: 0.9 }}>期間(日)</span>
+            <input
+              type="number"
+              value={days}
+              min={1}
+              max={60}
+              onChange={(e) => setDays(Number(e.target.value))}
+              style={{
+                width: 80,
+                padding: "8px 10px",
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.15)",
+                background: "white",
+                color: "black",
+                fontWeight: 700,
+              }}
+            />
+          </label>
+
+          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span style={{ opacity: 0.9 }}>表示数</span>
+            <input
+              type="number"
+              value={limit}
+              min={1}
+              max={100}
+              onChange={(e) => setLimit(Number(e.target.value))}
+              style={{
+                width: 80,
+                padding: "8px 10px",
+                borderRadius: 10,
+                border: "1px solid rgba(255,255,255,0.15)",
+                background: "white",
+                color: "black",
+                fontWeight: 700,
+              }}
+            />
+          </label>
+
+          <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              type="checkbox"
+              checked={auto}
+              onChange={(e) => setAuto(e.target.checked)}
+              style={{ transform: "scale(1.2)" }}
+            />
+            <span style={{ opacity: 0.95 }}>自動更新(10秒)</span>
+          </label>
+
+          <button
+            onClick={fetchRankings}
+            style={{
+              padding: "9px 12px",
+              borderRadius: 10,
+              border: "1px solid rgba(255,255,255,0.2)",
+              background: "#1f2937",
+              color: "white",
+              cursor: "pointer",
+              fontWeight: 800,
+            }}
+          >
+            手動更新
+          </button>
+        </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 mb-4">
-        <label className="text-white">期間(日):</label>
-        <select
-          value={days}
-          onChange={(e) => setDays(toInt(e.target.value, 7))}
-          className="border rounded px-2 py-1 text-black"
-        >
-          <option value={1}>1</option>
-          <option value={7}>7</option>
-          <option value={30}>30</option>
-          <option value={365}>全期間</option>
-        </select>
-
-        <label className="text-white">表示数:</label>
-        <input
-          type="number"
-          value={limit}
-          min={1}
-          max={50}
-          onChange={(e) => setLimit(Math.min(Math.max(toInt(e.target.value, 10), 1), 50))}
-          className="w-20 border rounded px-2 py-1 text-black"
-        />
-
-        <label className="text-white flex items-center gap-1">
-          <input
-            type="checkbox"
-            checked={auto}
-            onChange={() => setAuto((s) => !s)}
-            className="w-4 h-4"
-          />
-          自動更新
-        </label>
-
-        <button
-          onClick={fetchRankings}
-          className="ml-2 px-3 py-1 bg-white text-black rounded"
-        >
-          手動更新
-        </button>
-
-        {loading && <span className="ml-2 text-sm text-gray-300">読み込み中…</span>}
+      <div style={{ marginTop: 8, opacity: 0.85, fontSize: 12 }}>
+        {loading ? "更新中…" : data ? `生成: ${data.generated_at}` : ""}
+        {error ? ` / エラー: ${error}` : ""}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <section>
-          <h2 className="font-semibold mb-2">投稿者ランキング</h2>
-          <ol className="space-y-2">
-            {posters.length === 0 ? (
-              <li>データがありません</li>
-            ) : (
-              posters.map((p, i) => (
-                <li
-                  key={`${p.sender_user_id ?? "unknown"}-${i}`}
-                  className="flex justify-between items-center bg-slate-800 rounded px-2 py-1"
-                >
-                  <div>
-                    <strong>{i + 1}.</strong> {displayPosterName(p)}
-                  </div>
-                  <div>{p.post_count}</div>
-                </li>
-              ))
-            )}
-          </ol>
-        </section>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+        <div style={cardStyle}>
+          <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 10 }}>
+            投稿者ランキング（ユーザーID集計 / 最終使用名）
+          </div>
 
-        <section>
-          <h2 className="font-semibold mb-2">人気バトルランキング</h2>
-          <ol className="space-y-2">
-            {battles.length === 0 ? (
-              <li>データがありません</li>
-            ) : (
-              battles.map((b, i) => (
-                <li
-                  key={`${b.battle_name ?? "unknown"}-${i}`}
-                  className="flex justify-between items-center bg-slate-800 rounded px-2 py-1"
+          {data?.posters?.length ? (
+            <div style={{ display: "grid", gap: 8 }}>
+              {data.posters.map((p, i) => (
+                <div
+                  key={p.sender_user_id}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 10,
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    background: "rgba(255,255,255,0.06)",
+                    border: "1px solid rgba(255,255,255,0.10)",
+                  }}
                 >
-                  <div>
-                    <strong>{i + 1}.</strong> {b.battle_name}
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <div style={{ width: 22, textAlign: "right", opacity: 0.9, fontWeight: 800 }}>
+                      {i + 1}
+                    </div>
+                    <div style={{ fontWeight: 800 }}>
+                      {p.user_name && p.user_name.trim() ? p.user_name : "（名前なし）"}
+                    </div>
                   </div>
-                  <div>{b.post_count}</div>
-                </li>
-              ))
-            )}
-          </ol>
-        </section>
+                  <div style={{ fontWeight: 900 }}>{p.post_count}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ opacity: 0.8 }}>データがありません</div>
+          )}
+        </div>
+
+        <div style={cardStyle}>
+          <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 10 }}>人気バトルランキング</div>
+
+          {data?.battles?.length ? (
+            <div style={{ display: "grid", gap: 8 }}>
+              {data.battles.map((b, i) => (
+                <div
+                  key={`${b.battle_name}-${i}`}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 10,
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    background: "rgba(255,255,255,0.06)",
+                    border: "1px solid rgba(255,255,255,0.10)",
+                  }}
+                >
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <div style={{ width: 22, textAlign: "right", opacity: 0.9, fontWeight: 800 }}>
+                      {i + 1}
+                    </div>
+                    <div style={{ fontWeight: 800 }}>{b.battle_name}</div>
+                  </div>
+                  <div style={{ fontWeight: 900 }}>{b.post_count}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ opacity: 0.8 }}>データがありません</div>
+          )}
+        </div>
       </div>
     </div>
   );
