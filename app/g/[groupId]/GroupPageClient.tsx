@@ -142,6 +142,14 @@ function GroupPageInner({ groupId }: { groupId: string }) {
 
   const prevAllIdsRef = useRef<Set<string>>(new Set());
 
+  // ===== アクティブ復帰時の「最新IDコピー」用 =====
+  const lastActiveCopiedRaidInternalIdRef = useRef<string | null>(null);
+  const filteredRaidsRef = useRef<RaidRow[]>([]);
+  const autoCopyEnabledRef = useRef<boolean>(true);
+  const fetchRaidsRef = useRef<() => Promise<RaidRow[]>>(async () => []);
+  const bossFilterRef = useRef<string>("");
+  const seriesFilterRef = useRef<string>("");
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
@@ -170,11 +178,34 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     });
   }, []);
 
-  const fetchRaids = async () => {
+  async function writeClipboard(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // フォールバック（古い環境など）
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        return ok;
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  const fetchRaids = async (): Promise<RaidRow[]> => {
     if (!groupId) {
       setRaids([]);
       setLoading(false);
-      return;
+      return [];
     }
 
     try {
@@ -199,7 +230,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
       if (!res.ok) {
         console.error("failed to fetch raids", res.status);
         setRaids([]);
-        return;
+        return [];
       }
 
       const json = await res.json();
@@ -223,13 +254,20 @@ function GroupPageInner({ groupId }: { groupId: string }) {
       });
 
       setRaids(merged);
+      return merged;
     } catch (e) {
       console.error("fetchRaids error", e);
       setRaids([]);
+      return [];
     } finally {
       setLoading(false);
     }
   };
+
+  // fetchRaids をイベントハンドラから呼べるようにref同期
+  useEffect(() => {
+    fetchRaidsRef.current = fetchRaids;
+  }, [fetchRaids]);
 
   useEffect(() => {
     setLoading(true);
@@ -241,7 +279,9 @@ function GroupPageInner({ groupId }: { groupId: string }) {
 
   async function copyId(text: string, internalId?: string) {
     try {
-      await navigator.clipboard.writeText(text);
+      const ok = await writeClipboard(text);
+      if (!ok) return;
+
       setCopyMessage(`ID ${text} をコピーしました`);
       setTimeout(() => setCopyMessage(null), 1500);
 
@@ -274,6 +314,17 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     window.localStorage.setItem(NOTIFY_VOLUME_KEY, String(notifyVolume));
     window.localStorage.setItem(AUTO_COPY_ENABLED_KEY, String(autoCopyEnabled));
   }, [notifyEnabled, notifyVolume, autoCopyEnabled]);
+
+  // ref同期（イベントハンドラで最新値を参照するため）
+  useEffect(() => {
+    autoCopyEnabledRef.current = autoCopyEnabled;
+  }, [autoCopyEnabled]);
+  useEffect(() => {
+    bossFilterRef.current = bossFilter;
+  }, [bossFilter]);
+  useEffect(() => {
+    seriesFilterRef.current = seriesFilter;
+  }, [seriesFilter]);
 
   const playNotifySound = useCallback(() => {
     if (!notifyEnabled) return;
@@ -324,6 +375,103 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     const matchSeries = seriesFilter ? raidSeries === seriesFilter : true;
     return matchBoss && matchSeries;
   });
+
+  // filteredRaids をイベントハンドラから参照できるようにref同期
+  useEffect(() => {
+    filteredRaidsRef.current = filteredRaids;
+  }, [filteredRaids]);
+
+  // ★追加：タブ/ウィンドウがアクティブになった瞬間に「最新ID」を自動コピー
+  useEffect(() => {
+    let disposed = false;
+
+    const pickLatestByCreatedAt = (list: RaidRow[]) => {
+      if (!list || list.length === 0) return null;
+      return list.reduce((a, b) => {
+        const ta = Date.parse(a.created_at);
+        const tb = Date.parse(b.created_at);
+        if (Number.isNaN(ta) || Number.isNaN(tb)) return a;
+        return tb > ta ? b : a;
+      });
+    };
+
+    const copyLatestOnActive = async () => {
+      if (disposed) return;
+
+      // 自動コピーOFFなら何もしない
+      if (!autoCopyEnabledRef.current) return;
+
+      // 可視＆フォーカス時のみ
+      if (document.visibilityState !== "visible") return;
+      if (!document.hasFocus()) return;
+
+      // まず最新取得を試す（失敗しても現状のfilteredで続行）
+      let list: RaidRow[] = [];
+      try {
+        const merged = await fetchRaidsRef.current();
+
+        const bf = bossFilterRef.current;
+        const sf = seriesFilterRef.current;
+
+        list = merged.filter((r) => {
+          const matchBoss = bf ? getDisplayName(r) === bf : true;
+          const raidSeries = (r.series ?? "").toString().trim();
+          const matchSeries = sf ? raidSeries === sf : true;
+          return matchBoss && matchSeries;
+        });
+      } catch {
+        // noop
+      }
+
+      if (!list || list.length === 0) {
+        list = filteredRaidsRef.current;
+      }
+      if (!list || list.length === 0) return;
+
+      const latest = pickLatestByCreatedAt(list);
+      if (!latest?.raid_id) return;
+
+      // 同じIDの連打を防止
+      if (lastActiveCopiedRaidInternalIdRef.current === latest.id) return;
+
+      const ok = await writeClipboard(latest.raid_id);
+      if (!ok) return;
+
+      lastActiveCopiedRaidInternalIdRef.current = latest.id;
+
+      // UI反映（リング＆コピー済み＆メッセージ）
+      setLastAutoCopiedRaidId(latest.id);
+      addToCopied(latest.id);
+      setCopyMessage(`ID ${latest.raid_id} をコピーしました`);
+      setTimeout(() => setCopyMessage(null), 1500);
+
+      // この復帰タイミングでの二重コピー（autoCopy effect）を抑止
+      const bf = bossFilterRef.current;
+      const sf = seriesFilterRef.current;
+      prevFilterRef.current = `${bf}|${sf}`;
+      autoCopyInitializedRef.current = true;
+      seenFilteredRaidIdsRef.current = new Set(list.map((r) => r.id));
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void copyLatestOnActive();
+    };
+    const onFocus = () => {
+      void copyLatestOnActive();
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onFocus);
+
+    // 初回表示時も、すでにアクティブなら最新コピー
+    void copyLatestOnActive();
+
+    return () => {
+      disposed = true;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [addToCopied]);
 
   useEffect(() => {
     if (!raids) return;
@@ -377,15 +525,17 @@ function GroupPageInner({ groupId }: { groupId: string }) {
 
     if (newlyAdded.length > 0) {
       const target = newlyAdded[0];
-      navigator.clipboard
-        .writeText(target.raid_id)
-        .then(() => {
-          setLastAutoCopiedRaidId(target.id);
-          addToCopied(target.id);
-          setCopyMessage(`ID ${target.raid_id} をコピーしました`);
-          setTimeout(() => setCopyMessage(null), 1500);
-        })
-        .catch((err) => console.error("自動コピーに失敗しました:", err));
+      (async () => {
+        const ok = await writeClipboard(target.raid_id);
+        if (!ok) {
+          console.error("自動コピーに失敗しました: clipboard write failed");
+          return;
+        }
+        setLastAutoCopiedRaidId(target.id);
+        addToCopied(target.id);
+        setCopyMessage(`ID ${target.raid_id} をコピーしました`);
+        setTimeout(() => setCopyMessage(null), 1500);
+      })().catch((err) => console.error("自動コピーに失敗しました:", err));
     }
 
     seenFilteredRaidIdsRef.current = currentIds;

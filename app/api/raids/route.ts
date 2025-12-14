@@ -438,13 +438,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
     }
 
-    // アルバハ200（既存仕様）
+    // アルバハ200（表示条件を「7000万超のみ通す」に変更）
+    //  - 表示: 70,000,000 より上（7000万↑）
+    //  - 非表示: 70,000,000 以下（7000万以下）
     const hpValueNum = hpValue == null ? null : Number(hpValue);
+    const isUltBaha =
+      bossName === ULT_BAHAMUT_NAME || battleName === ULT_BAHAMUT_NAME;
+
     if (
-      bossName === ULT_BAHAMUT_NAME &&
+      isUltBaha &&
       hpValueNum != null &&
       !Number.isNaN(hpValueNum) &&
-      hpValueNum > ULT_BAHAMUT_HP_THRESHOLD
+      hpValueNum <= ULT_BAHAMUT_HP_THRESHOLD
     ) {
       return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
     }
