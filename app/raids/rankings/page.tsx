@@ -148,28 +148,25 @@ export default function RaidRankingsPage() {
             alignItems: "center",
           }}
         >
-          {/* ✅ グループは表示専用（操作不可・コピー不可） */}
-          <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          {/* ✅ グループは「ラベル＋太字テキスト」（入力欄っぽさ無し / 選択不可） */}
+          <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
             <span style={{ opacity: 0.9 }}>グループ</span>
-            <div
-              aria-label="group"
+            <span
               style={{
-                width: 320,
-                padding: "8px 10px",
-                borderRadius: 10,
-                border: "1px solid rgba(255,255,255,0.15)",
-                background: "#0b1220",
-                color: "white",
-                fontWeight: 800,
-                lineHeight: "20px",
+                fontWeight: 900,
+                fontSize: 16,
                 userSelect: "none",
                 cursor: "default",
+                maxWidth: 360,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
               }}
               title={groupId || ""}
             >
               {groupId || "（未指定）"}
-            </div>
-          </label>
+            </span>
+          </div>
 
           <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <span style={{ opacity: 0.9 }}>期間(日)</span>
