@@ -31,11 +31,13 @@ const cardStyle: React.CSSProperties = {
   padding: 12,
 };
 
+// 統合対象ID
 const MERGE_IDS = new Set([
   "86f9ace9-dad7-4daa-9c28-adb44759c252",
   "8cf84c8f-2052-47fb-a3a9-cf7f2980eef4",
 ]);
 
+// 代表ID（表示上の1ユーザーとして扱うID）
 const CANONICAL_ID = "8cf84c8f-2052-47fb-a3a9-cf7f2980eef4";
 
 function mergePosters(posters: Poster[]): Poster[] {
@@ -43,6 +45,10 @@ function mergePosters(posters: Poster[]): Poster[] {
 
   const normalize = (id: string) => (MERGE_IDS.has(id) ? CANONICAL_ID : id);
 
+  // namePriority:
+  //  - 2: 代表IDの名前（最優先）
+  //  - 1: 非代表IDの名前
+  //  - 0: 空
   const namePriority = (p: Poster) => {
     const hasName = !!(p.user_name && p.user_name.trim());
     if (!hasName) return 0;
@@ -117,8 +123,10 @@ export default function RaidRankingsPage() {
     setError("");
 
     try {
-      // ★ 結合で件数が減るので、取得時は少し多めに取る（表示は最終的にlimit件）
-      const fetchLimit = Math.min(200, Math.max(1, limit + 5));
+      // 結合でユーザーが減る可能性があるので、取得は少し多め
+      // ※表示は必ず limit 件に揃える（ここが重要）
+      const safeLimit = Math.max(1, limit);
+      const fetchLimit = Math.min(200, safeLimit + 5);
 
       const qs = new URLSearchParams();
       qs.set("days", String(days));
@@ -134,11 +142,19 @@ export default function RaidRankingsPage() {
 
       const j = (await res.json()) as ApiResponse;
 
+      // ★同一ユーザーはきっちり1人として結合
       const mergedPosters = mergePosters(j.posters ?? []);
-      const postersFixed = mergedPosters.slice(0, Math.max(1, limit));
 
-      // 表示上のlimitはユーザー入力のlimitに合わせる
-      setData({ ...j, limit, posters: postersFixed });
+      // ★表示は「必ず limit 件」
+      const postersFixed = mergedPosters.slice(0, safeLimit);
+      const battlesFixed = (j.battles ?? []).slice(0, safeLimit);
+
+      setData({
+        ...j,
+        limit: safeLimit,
+        posters: postersFixed,
+        battles: battlesFixed,
+      });
     } catch (e: any) {
       setError(e?.message ?? String(e));
       setData(null);
