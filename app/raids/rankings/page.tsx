@@ -10,6 +10,10 @@ type Poster = {
   // API側で「期間内にそのユーザーが最後に使った user_name」を返す想定
   user_name: string | null;
   post_count: number;
+
+  // （任意）もしAPIが返せるなら、統合時に「本当に最後に使った名前」を厳密に選べます
+  // ※無くても動きます
+  last_used_at?: string | null;
 };
 
 type Battle = { battle_name: string; post_count: number };
@@ -28,6 +32,72 @@ function displayPosterName(p: Poster): string {
   const uid = (p.sender_user_id ?? "").trim();
   if (uid) return `(不明: ${shortId(uid)})`;
   return "(不明)";
+}
+
+// ==== sender_user_id 統合（例外ルール）====
+// 指定の2つは同一ユーザー扱いにしてランキングを統合する
+const MERGE_SENDER_IDS = new Set<string>([
+  "8cf84c8f-2052-47fb-a3a9-cf7f2980eef4",
+  "86f9ace9-dad7-4daa-9c28-adb44759c252",
+]);
+
+// 代表ID（DBには保存せず、フロント側の集計キーとしてのみ使用）
+const CANONICAL_SENDER_ID = "8cf84c8f-2052-47fb-a3a9-cf7f2980eef4";
+
+function normalizeSenderId(id: string | null): string | null {
+  if (!id) return id;
+  return MERGE_SENDER_IDS.has(id) ? CANONICAL_SENDER_ID : id;
+}
+
+function mergePosters(posters: Poster[]): Poster[] {
+  const map = new Map<string, Poster>();
+
+  for (const p of posters) {
+    const normalized = normalizeSenderId(p.sender_user_id);
+    const key = normalized ?? "__NULL__";
+
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, {
+        ...p,
+        sender_user_id: key === "__NULL__" ? null : key,
+      });
+      continue;
+    }
+
+    // 件数は合算
+    existing.post_count += p.post_count;
+
+    // 表示名は「最後に使った名前」優先
+    // APIが last_used_at を返せるならそれで厳密に比較し、無い場合は安全なフォールバック
+    const pTime = p.last_used_at ?? null;
+    const eTime = existing.last_used_at ?? null;
+
+    if (pTime && (!eTime || new Date(pTime).getTime() > new Date(eTime).getTime())) {
+      existing.user_name = p.user_name;
+      existing.last_used_at = p.last_used_at ?? existing.last_used_at;
+    } else {
+      // フォールバック:
+      // 1) 既存が空で、新しい方が名前を持っていれば採用
+      // 2) 両方名前があるなら、代表ID側の名前を優先（揺れを防ぐ）
+      const existingName = (existing.user_name ?? "").trim();
+      const pName = (p.user_name ?? "").trim();
+
+      if (!existingName && pName) {
+        existing.user_name = p.user_name;
+      } else if (existingName && pName) {
+        const existingWasCanonical = existing.sender_user_id === CANONICAL_SENDER_ID;
+        const pWasCanonical = normalized === CANONICAL_SENDER_ID;
+
+        if (!existingWasCanonical && pWasCanonical) {
+          existing.user_name = p.user_name;
+          existing.last_used_at = p.last_used_at ?? existing.last_used_at;
+        }
+      }
+    }
+  }
+
+  return Array.from(map.values());
 }
 
 export default function RaidRankingsPage() {
@@ -55,24 +125,38 @@ export default function RaidRankingsPage() {
     if (!groupId) return;
     setLoading(true);
     try {
+      // 統合で「11位と1位を足したら本来1位」みたいなケースを取りこぼさないため、
+      // 取得は最大50件にして、表示は limit で切ります（表示ルールはそのまま）
+      const fetchLimit = 50;
+
       const [pRes, bRes] = await Promise.all([
         fetch(
           `/api/raids/rank/top-posters?group_id=${encodeURIComponent(
             groupId
-          )}&days=${days}&limit=${limit}`
+          )}&days=${days}&limit=${fetchLimit}`
         ),
         fetch(
           `/api/raids/rank/top-battles?group_id=${encodeURIComponent(
             groupId
-          )}&days=${days}&limit=${limit}`
+          )}&days=${days}&limit=${fetchLimit}`
         ),
       ]);
 
       const pj = await pRes.json();
       const bj = await bRes.json();
 
-      setPosters(pj.ok ? (pj.data as Poster[]) : []);
-      setBattles(bj.ok ? (bj.data as Battle[]) : []);
+      const rawPosters = pj.ok ? (pj.data as Poster[]) : [];
+      const mergedPosters = mergePosters(rawPosters)
+        .sort((a, b) => b.post_count - a.post_count)
+        .slice(0, limit);
+
+      const rawBattles = bj.ok ? (bj.data as Battle[]) : [];
+      const limitedBattles = rawBattles
+        .sort((a, b) => b.post_count - a.post_count)
+        .slice(0, limit);
+
+      setPosters(mergedPosters);
+      setBattles(limitedBattles);
     } catch (e) {
       console.error(e);
     } finally {
