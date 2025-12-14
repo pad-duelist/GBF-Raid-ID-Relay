@@ -580,9 +580,24 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     return { color: "#cbd5e1" };
   };
 
-  const memberCountStyle = (count: number | null | undefined): React.CSSProperties => {
-    if (count == null) return { color: "#94a3b8" };
-    if (count <= 2) return { color: "#50d552", fontWeight: 600 };
+  // ★修正：参戦者数の条件色（5/6、8/18、8/30以上 → #ff6347）
+  const memberCountStyle = (
+    current: number | null | undefined,
+    max: number | null | undefined
+  ): React.CSSProperties => {
+    if (current == null || max == null) return { color: "#94a3b8" };
+
+    // 既存ルール：2人以下は緑
+    if (current <= 2) return { color: "#50d552", fontWeight: 600 };
+
+    // 追加ルール：混雑し始めたら赤
+    const isTomato =
+      (max === 6 && current >= 5) ||
+      (max === 18 && current >= 8) ||
+      (max === 30 && current >= 8);
+
+    if (isTomato) return { color: "#ff6347", fontWeight: 600 };
+
     return { color: "#94a3b8" };
   };
 
@@ -751,7 +766,10 @@ function GroupPageInner({ groupId }: { groupId: string }) {
                     <div className="text-xs text-slate-300">{raid.user_name ?? "匿名"}</div>
 
                     {memberText && (
-                      <div style={memberCountStyle(raid.member_current)} className="text-xs font-mono">
+                      <div
+                        style={memberCountStyle(raid.member_current, raid.member_max)}
+                        className="text-xs font-mono"
+                      >
                         {memberText}
                       </div>
                     )}
