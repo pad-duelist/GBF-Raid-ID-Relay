@@ -55,7 +55,7 @@ export default function RaidRankingsPage() {
     setInitialized(true);
   }, []);
 
-  // ✅ 戻る先は常にグループページ固定
+  // 戻る先は常にグループページ固定
   const handleBack = useCallback(() => {
     const g = groupId.trim();
     if (g) router.push(`/g/${encodeURIComponent(g)}`);
@@ -148,12 +148,11 @@ export default function RaidRankingsPage() {
             alignItems: "center",
           }}
         >
+          {/* ✅ グループは表示専用（操作不可・コピー不可） */}
           <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <span style={{ opacity: 0.9 }}>グループ</span>
-            <input
-              value={groupId}
-              onChange={(e) => setGroupId(e.target.value)}
-              placeholder="group_name または group_id(UUID)"
+            <div
+              aria-label="group"
               style={{
                 width: 320,
                 padding: "8px 10px",
@@ -161,8 +160,15 @@ export default function RaidRankingsPage() {
                 border: "1px solid rgba(255,255,255,0.15)",
                 background: "#0b1220",
                 color: "white",
+                fontWeight: 800,
+                lineHeight: "20px",
+                userSelect: "none",
+                cursor: "default",
               }}
-            />
+              title={groupId || ""}
+            >
+              {groupId || "（未指定）"}
+            </div>
           </label>
 
           <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
