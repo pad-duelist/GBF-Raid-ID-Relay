@@ -96,7 +96,7 @@ export default function RaidRankingsPage() {
   const [initialized, setInitialized] = useState(false);
 
   const [groupId, setGroupId] = useState<string>("");
-  const [days, setDays] = useState<number>(7);
+  const [days, setDays] = useState<number>(1); // ★デフォルトを 1 日に変更
   const [limit, setLimit] = useState<number>(10);
 
   const [data, setData] = useState<ApiResponse | null>(null);
