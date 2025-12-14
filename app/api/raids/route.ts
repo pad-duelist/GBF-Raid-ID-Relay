@@ -14,7 +14,7 @@ const sb: any = supabase; // ★型推論を止める（Vercelビルド安定化
 // ===== 定数: 特殊ボスの判定 =====
 const ULT_BAHAMUT_NAME = "Lv200 アルティメットバハムート";
 
-// 通常: 70,000,000 以下は非表示（= 70,000,000 より上を表示）
+// 通常: (現状の設定値) 以下は非表示（= これより上を表示）
 const ULT_BAHAMUT_HP_THRESHOLD_DEFAULT = 65000000;
 
 // 一部 sender_user_id のみ: 76,000,000 以下は非表示（= 76,000,000 より上を表示）
@@ -283,8 +283,35 @@ async function mapNormalize(name: string | null | undefined): Promise<string | n
   return raw;
 }
 
-// ===== 参戦者数抑制（必要なら後で拡張） =====
-function shouldSuppressByMembers(_memberCurrent: any, _memberMax: any): boolean {
+// ===== 参戦者数抑制（復活） =====
+function toIntOrNull(v: any): number | null {
+  if (v == null) return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  return Math.trunc(n);
+}
+
+/**
+ * 非表示ルール（要望）
+ * - 6/6 は非表示
+ * - 10/18 以上は非表示
+ * - 10/30 以上は非表示
+ */
+function shouldSuppressByMembers(memberCurrent: any, memberMax: any): boolean {
+  const c = toIntOrNull(memberCurrent);
+  const m = toIntOrNull(memberMax);
+  if (c == null || m == null) return false;
+  if (c <= 0 || m <= 0) return false;
+
+  // 6人マルチ: 満員(6/6)は非表示
+  if (m === 6 && c >= 6) return true;
+
+  // 18人マルチ: 10/18以上は非表示
+  if (m === 18 && c >= 10) return true;
+
+  // 30人マルチ: 10/30以上は非表示
+  if (m === 30 && c >= 10) return true;
+
   return false;
 }
 
@@ -322,6 +349,11 @@ export async function GET(req: NextRequest) {
 
   const matchedGroupId = mem.matchedGroupId;
 
+  // 表示数（フィルタ後にこの件数に揃える）
+  const requestedLimit = isNaN(Number(limitParam)) ? 50 : Math.max(1, Number(limitParam));
+  // 先に多めに取って、参戦者数フィルタで減っても requestedLimit 返せるようにする
+  const fetchLimit = Math.min(200, Math.max(requestedLimit, requestedLimit * 2));
+
   try {
     let query = sb
       .from("raids")
@@ -343,7 +375,7 @@ export async function GET(req: NextRequest) {
       )
       .eq("group_id", matchedGroupId)
       .order("created_at", { ascending: false })
-      .limit(isNaN(Number(limitParam)) ? 50 : Number(limitParam));
+      .limit(fetchLimit);
 
     if (bossNameParam) {
       const normalizedBossNameParam = await mapNormalize(bossNameParam);
@@ -365,7 +397,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json(data ?? [], { status: 200 });
+    const rows = (data ?? []) as any[];
+
+    // ★参戦者数抑制（GETでも適用：既存データも非表示にする）
+    const filtered = rows.filter(
+      (r) => !shouldSuppressByMembers((r as any)?.member_current, (r as any)?.member_max)
+    );
+
+    return NextResponse.json(filtered.slice(0, requestedLimit), { status: 200 });
   } catch (e) {
     console.error("[GET /api/raids] error:", e);
     return NextResponse.json({ error: "internal error" }, { status: 500 });
@@ -443,14 +482,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, blocked: true }, { status: 200 });
     }
 
-    // 参戦者数抑制
+    // ★参戦者数抑制（POST時点で登録しない）
     if (shouldSuppressByMembers(memberCurrent, memberMax)) {
       return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
     }
 
     // アルバハ200（表示条件）
-    //  - 通常: 70,000,000 より上（7000万↑）を表示 / 70,000,000 以下は非表示
-    //  - 特定の sender_user_id のみ: 76,000,000 より上（7600万↑）を表示 / 76,000,000 以下は非表示
     const hpValueNum = hpValue == null ? null : Number(hpValue);
     const isUltBaha = bossName === ULT_BAHAMUT_NAME || battleName === ULT_BAHAMUT_NAME;
 
@@ -458,7 +495,12 @@ export async function POST(req: NextRequest) {
       ? ULT_BAHAMUT_HP_THRESHOLD_SPECIAL
       : ULT_BAHAMUT_HP_THRESHOLD_DEFAULT;
 
-    if (isUltBaha && hpValueNum != null && !Number.isNaN(hpValueNum) && hpValueNum <= ultBahaThreshold) {
+    if (
+      isUltBaha &&
+      hpValueNum != null &&
+      !Number.isNaN(hpValueNum) &&
+      hpValueNum <= ultBahaThreshold
+    ) {
       return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
     }
 
