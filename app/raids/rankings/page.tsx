@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
 
 type Poster = {
   sender_user_id: string | null;
-  // ★ API側で「期間内にそのユーザーが最後に使った user_name」を返す想定
+  // API側で「期間内にそのユーザーが最後に使った user_name」を返す想定
   user_name: string | null;
   post_count: number;
 };
@@ -21,7 +21,7 @@ function shortId(id: string, head = 8): string {
 
 function displayPosterName(p: Poster): string {
   // 表示名は「最後に使用した user_name」
-  // ただし null の場合に備えて sender_user_id をフォールバック表示
+  // null/空の場合は sender_user_id をフォールバック（表示名として）
   const name = (p.user_name ?? "").trim();
   if (name) return name;
 
@@ -42,10 +42,10 @@ export default function RaidRankingsPage() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    function readGroupIdFromUrl() {
+    const readGroupIdFromUrl = () => {
       const params = new URLSearchParams(window.location.search);
       setGroupId(params.get("groupId") || "");
-    }
+    };
     readGroupIdFromUrl();
     window.addEventListener("popstate", readGroupIdFromUrl);
     return () => window.removeEventListener("popstate", readGroupIdFromUrl);
@@ -56,9 +56,6 @@ export default function RaidRankingsPage() {
     setLoading(true);
     try {
       const [pRes, bRes] = await Promise.all([
-        // ★ 投稿者ランキングは group_id ごと（従来通り）
-        // ★ 集計キーは sender_user_id（API側で対応）
-        // ★ user_name は「最後に使用したもの」（API側で対応）
         fetch(
           `/api/raids/rank/top-posters?group_id=${encodeURIComponent(
             groupId
@@ -85,10 +82,13 @@ export default function RaidRankingsPage() {
 
   useEffect(() => {
     if (!groupId) return;
+
     fetchRankings();
+
     if (auto) {
       intervalRef.current = window.setInterval(fetchRankings, 30_000) as unknown as number;
     }
+
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
       intervalRef.current = null;
@@ -106,7 +106,9 @@ export default function RaidRankingsPage() {
   return (
     <div className="p-4 bg-slate-900 min-h-screen text-slate-50">
       <div className="flex items-center justify-between mb-3">
-        <h1 className="text-xl font-bold">ランキング（グループ: {groupId || "未指定"}）</h1>
+        <h1 className="text-xl font-bold">
+          ランキング（グループ: {groupId || "未指定"}）
+        </h1>
         <div className="flex items-center gap-2">
           <button
             onClick={handleBackToGroup}
@@ -150,7 +152,10 @@ export default function RaidRankingsPage() {
           自動更新
         </label>
 
-        <button onClick={fetchRankings} className="ml-2 px-3 py-1 bg-white text-black rounded">
+        <button
+          onClick={fetchRankings}
+          className="ml-2 px-3 py-1 bg-white text-black rounded"
+        >
           手動更新
         </button>
 
@@ -173,10 +178,6 @@ export default function RaidRankingsPage() {
                     <div>
                       <strong>{i + 1}.</strong> {displayPosterName(p)}
                     </div>
-                    {/* デバッグ/識別用に user_id も小さく表示（不要なら削除OK） */}
-                    {p.sender_user_id && (
-                      <div className="text-xs text-slate-300">user_id: {shortId(p.sender_user_id, 12)}</div>
-                    )}
                   </div>
                   <div>{p.post_count}</div>
                 </li>
