@@ -34,8 +34,7 @@ const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
- * ★ラッパー：アクセス判定だけを担当
- * Hook の順序が崩れないように、UI本体は別コンポーネントへ切り出す
+ * ★ラッパー：アクセス判定 + （可能なら）group_id(uuid)へ正規化
  */
 export default function GroupPageClient({ groupId }: { groupId: string }) {
   const router = useRouter();
@@ -44,7 +43,6 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
   const [accessChecking, setAccessChecking] = useState(true);
   const [accessErrorText, setAccessErrorText] = useState<string | null>(null);
 
-  // ★URLは name(/g/Apoklisi)でもOK。ただし内部参照はuuid(group_id)へ正規化する
   const [canonicalGroupId, setCanonicalGroupId] = useState<string | null>(null);
   const [groupName, setGroupName] = useState<string>(groupId);
 
@@ -68,7 +66,7 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
           return;
         }
 
-        // 1) まずアクセス判定（既存仕様を維持）
+        // 1) アクセス判定（既存仕様）
         const res = await fetch(
           `/api/group-access?groupId=${encodeURIComponent(groupId)}&userId=${encodeURIComponent(
             userId.trim()
@@ -89,26 +87,18 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
           return;
         }
 
-        // 2) ★グループIDをuuidに正規化（可能なら必ずuuidを使う）
+        // 2) ★group_id(uuid)を可能なら確定（group-accessが返しているならそれを優先）
         let resolvedId: string | null =
-          json?.group_id ??
-          json?.groupId ??
-          json?.group?.id ??
-          json?.group?.group_id ??
-          null;
+          json?.group_id ?? json?.groupId ?? json?.group?.id ?? json?.group?.group_id ?? null;
 
         let resolvedName: string =
-          json?.group_name ??
-          json?.group?.name ??
-          json?.group?.group_name ??
-          groupId;
+          json?.group_name ?? json?.group?.name ?? json?.group?.group_name ?? groupId;
 
-        // URLがuuidの場合はそのまま採用
         if (!resolvedId && UUID_RE.test(groupId)) {
           resolvedId = groupId;
         }
 
-        // group-access がIDを返さない実装でも動かせるように、resolve APIがあれば併用
+        // resolve APIがあれば利用（なければ無視してfallback）
         if (!resolvedId && !UUID_RE.test(groupId)) {
           try {
             const r2 = await fetch(`/api/groups/resolve?key=${encodeURIComponent(groupId)}`, {
@@ -122,12 +112,12 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
               }
             }
           } catch {
-            // 失敗しても致命ではない（fallbackで動かす）
+            // ignore
           }
         }
 
         if (!cancelled) {
-          setCanonicalGroupId(resolvedId ?? null);
+          setCanonicalGroupId(resolvedId ?? groupId);
           setGroupName(resolvedName);
           setAccessOk(true);
         }
@@ -158,13 +148,9 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
     );
   }
 
-  // accessOk になったら UI本体へ（Hook順序が崩れない）
   return <GroupPageInner groupId={canonicalGroupId ?? groupId} groupName={groupName} />;
 }
 
-/**
- * ★UI本体（元の GroupPageClient のロジック）
- */
 function GroupPageInner({ groupId, groupName }: { groupId: string; groupName: string }) {
   const router = useRouter();
 
@@ -173,31 +159,23 @@ function GroupPageInner({ groupId, groupName }: { groupId: string; groupName: st
   const [auto, setAuto] = useState(true);
   const intervalRef = useRef<number | null>(null);
 
-  // 設定
   const [notifyEnabled, setNotifyEnabled] = useState<boolean>(true);
   const [notifyVolume, setNotifyVolume] = useState<number>(0.5);
   const [autoCopyEnabled, setAutoCopyEnabled] = useState<boolean>(true);
 
-  // 「前回の最新ID」を覚えておく（自動コピーの判定に使う）
   const lastTopRaidIdRef = useRef<string | null>(null);
-
-  // コピー済みID（暗くする）
   const [copiedIds, setCopiedIds] = useState<Set<string>>(new Set<string>());
 
-  // battleNameMap（表示名変換）
   const { map: battleNameMap } = useBattleNameMap();
 
-  // series mapping
-  const { mapping: battleMapping } = useBattleMapping();
+  // ✅ 修正点：mapping ではなく map
+  const { map: battleMapping } = useBattleMapping();
 
-  // UI: マルチ絞り込み
   const [seriesOptions, setSeriesOptions] = useState<string[]>([]);
   const [selectedSeries, setSelectedSeries] = useState<string>("all");
 
-  // 音
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // 初期設定読み込み
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -217,24 +195,19 @@ function GroupPageInner({ groupId, groupName }: { groupId: string; groupName: st
       try {
         const arr = JSON.parse(v4) as string[];
         if (Array.isArray(arr)) setCopiedIds(new Set(arr));
-      } catch {
-        // ignore
-      }
+      } catch {}
     }
   }, []);
 
-  // audio element
   useEffect(() => {
     audioRef.current = new Audio("/notify.mp3");
   }, []);
 
-  // コピー済みIDの永続化
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(COPIED_IDS_KEY, JSON.stringify(Array.from(copiedIds)));
   }, [copiedIds]);
 
-  // 絞り込み候補（series）を raids から抽出
   useEffect(() => {
     const s = new Set<string>();
     for (const r of raids) {
@@ -243,11 +216,9 @@ function GroupPageInner({ groupId, groupName }: { groupId: string; groupName: st
       const series = info?.series;
       if (series) s.add(series);
     }
-    const arr = Array.from(s).sort((a, b) => a.localeCompare(b));
-    setSeriesOptions(arr);
+    setSeriesOptions(Array.from(s).sort((a, b) => a.localeCompare(b)));
   }, [raids, battleMapping]);
 
-  // raids 取得
   const fetchRaids = useCallback(async () => {
     setLoading(true);
     try {
@@ -256,34 +227,29 @@ function GroupPageInner({ groupId, groupName }: { groupId: string; groupName: st
       query.set("limit", "50");
       query.set("debug", "0");
 
+      // ★必須：所属チェック用 + 自分の投稿除外
+      const userId =
+        typeof window !== "undefined" ? window.localStorage.getItem("extensionUserId") : null;
+      if (userId && userId.trim()) {
+        query.set("excludeUserId", userId.trim());
+      }
+
       const res = await fetch(`/api/raids?${query.toString()}`, { cache: "no-store" });
       if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
 
-      const json = await res.json();
-      const rows: RaidRow[] = Array.isArray(json?.data) ? json.data : [];
-
+      const rows: RaidRow[] = await res.json();
       setRaids(rows);
 
-      // 自動コピー（最新の先頭IDが変わった時だけ）
       if (autoCopyEnabled && rows.length > 0) {
-        const top = rows[0];
-        const topRaidId = top?.raid_id ?? null;
-
+        const topRaidId = rows[0]?.raid_id ?? null;
         if (topRaidId && topRaidId !== lastTopRaidIdRef.current) {
           lastTopRaidIdRef.current = topRaidId;
-
           try {
             await navigator.clipboard.writeText(topRaidId);
             setCopiedIds((prev) => new Set(prev).add(topRaidId));
-          } catch (e) {
-            console.warn("auto copy failed", e);
-          }
+          } catch {}
         }
       }
-
-      // 通知音（新着が来たら鳴らす…などの既存ロジックを維持）
-      // ※元の実装に合わせて必要ならここを調整
-      // ここでは既存挙動を壊さないため、元コードのまま（下側に既に処理があるならそちらが優先）
     } catch (e) {
       console.error("fetch raids failed", e);
     } finally {
@@ -291,7 +257,6 @@ function GroupPageInner({ groupId, groupName }: { groupId: string; groupName: st
     }
   }, [groupId, autoCopyEnabled]);
 
-  // 初回 + 自動更新
   useEffect(() => {
     fetchRaids();
   }, [fetchRaids]);
@@ -309,7 +274,6 @@ function GroupPageInner({ groupId, groupName }: { groupId: string; groupName: st
     };
   }, [auto, fetchRaids]);
 
-  // 設定保存
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(NOTIFY_ENABLED_KEY, notifyEnabled ? "1" : "0");
@@ -325,7 +289,6 @@ function GroupPageInner({ groupId, groupName }: { groupId: string; groupName: st
     window.localStorage.setItem(AUTO_COPY_ENABLED_KEY, autoCopyEnabled ? "1" : "0");
   }, [autoCopyEnabled]);
 
-  // 手動コピー
   const copyRaidId = useCallback(async (raidId: string) => {
     try {
       await navigator.clipboard.writeText(raidId);
@@ -335,7 +298,6 @@ function GroupPageInner({ groupId, groupName }: { groupId: string; groupName: st
     }
   }, []);
 
-  // 音テスト
   const playSound = useCallback(async () => {
     if (!audioRef.current) return;
     try {
@@ -346,12 +308,10 @@ function GroupPageInner({ groupId, groupName }: { groupId: string; groupName: st
     }
   }, [notifyVolume]);
 
-  // 絞り込み適用
   const filteredRaids = raids.filter((r) => {
     if (selectedSeries === "all") return true;
     const key = normalizeKey(r.battle_name ?? r.boss_name ?? "");
-    const info = battleMapping[key];
-    return info?.series === selectedSeries;
+    return battleMapping[key]?.series === selectedSeries;
   });
 
   return (
@@ -476,12 +436,6 @@ function GroupPageInner({ groupId, groupName }: { groupId: string; groupName: st
 
             const bossOrBattle = battleLabel ?? r.boss_name ?? "";
 
-            const bossText = looksLikeUrl(bossOrBattle) ? (
-              <img src={bossOrBattle} alt="boss" className="w-8 h-8 rounded" />
-            ) : (
-              <span className="font-semibold">{bossOrBattle}</span>
-            );
-
             const hpText =
               r.hp_value != null
                 ? `${formatNumberWithComma(r.hp_value)}`
@@ -500,8 +454,6 @@ function GroupPageInner({ groupId, groupName }: { groupId: string; groupName: st
                 }`}
               >
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="shrink-0">{bossText}</div>
-
                   <div className="min-w-0">
                     <div className="text-sm truncate">
                       {r.user_name ? <span className="text-slate-200">{r.user_name}</span> : null}
@@ -510,6 +462,7 @@ function GroupPageInner({ groupId, groupName }: { groupId: string; groupName: st
                     </div>
 
                     <div className="text-xs text-slate-400 flex gap-3">
+                      <span>{looksLikeUrl(bossOrBattle) ? "" : <span className="font-semibold">{bossOrBattle}</span>}</span>
                       <span>HP: {hpText}</span>
                       <span>参戦: {memberText}</span>
                     </div>
