@@ -76,7 +76,7 @@ function mergePosters(posters: Poster[]): Poster[] {
   return merged;
 }
 
-// JST 5:00 境界で from を計算（ブラウザTZに依存しない）
+// JST 5:00 境界で from/to を計算（ブラウザTZに依存しない）
 const JST_OFFSET_MIN = 9 * 60;
 
 function jstParts(nowUtc: Date) {
@@ -116,7 +116,26 @@ function computeFrom(nowUtc: Date, period: PeriodKey): Date {
     const mon = addDaysJst(e.y, e.m, e.d, -diffFromMon);
     return makeInstantFromJst(mon.y, mon.m, mon.d, 5, 0, 0);
   }
+  // month
   return makeInstantFromJst(e.y, e.m, 1, 5, 0, 0);
+}
+
+// ★固定ウィンドウ（未来の終端）を返す
+function computeRange(nowUtc: Date, period: PeriodKey) {
+  const from = computeFrom(nowUtc, period);
+
+  if (period === "today") {
+    return { from, to: new Date(from.getTime() + 1 * 86400000) }; // 翌日 05:00 (排他)
+  }
+  if (period === "week") {
+    return { from, to: new Date(from.getTime() + 7 * 86400000) }; // 翌週 月曜 05:00 (排他)
+  }
+  // month: from の“JST年月”から翌月1日 05:00 を作る
+  const fromShifted = new Date(from.getTime() + JST_OFFSET_MIN * 60 * 1000);
+  const y = fromShifted.getUTCFullYear();
+  const m = fromShifted.getUTCMonth();
+  const to = makeInstantFromJst(y, m + 1, 1, 5, 0, 0); // 翌月1日 05:00 (排他)
+  return { from, to };
 }
 
 function formatJst(dtUtc: Date) {
@@ -127,6 +146,11 @@ function formatJst(dtUtc: Date) {
   const hh = String(shifted.getUTCHours()).padStart(2, "0");
   const mm = String(shifted.getUTCMinutes()).padStart(2, "0");
   return `${y}/${m}/${d} ${hh}:${mm} (JST)`;
+}
+
+// to(排他) を “4:59” 表記に寄せる（to - 1分）
+function formatJstRangeEnd(toExclusiveUtc: Date) {
+  return formatJst(new Date(toExclusiveUtc.getTime() - 60 * 1000));
 }
 
 export default function RaidRankingsPage() {
@@ -154,9 +178,10 @@ export default function RaidRankingsPage() {
     else router.push(`/`);
   }, [router, groupId]);
 
+  // ★現在時刻は使わず「未来の終端」まで表示
   const rangeInfo = useMemo(() => {
     const now = new Date();
-    return { from: computeFrom(now, period), to: now };
+    return computeRange(now, period);
   }, [period]);
 
   const fetchRankings = useCallback(async () => {
@@ -169,12 +194,12 @@ export default function RaidRankingsPage() {
       const fetchLimit = Math.min(200, safeLimit + 5);
 
       const now = new Date();
-      const from = computeFrom(now, period);
+      const { from, to } = computeRange(now, period);
 
       const qs = new URLSearchParams();
       qs.set("limit", String(fetchLimit));
       qs.set("from", from.toISOString());
-      // qs.set("to", now.toISOString()); // 必要なら有効化
+      qs.set("to", to.toISOString()); // ★固定ウィンドウ終端も送る（API側で使う）
       if (groupId.trim()) qs.set("groupId", groupId.trim());
       qs.set("_t", String(Date.now()));
 
@@ -248,9 +273,10 @@ export default function RaidRankingsPage() {
                 fontWeight: 700,
               }}
             >
-              <option value="today">今日（5:00〜翌4:59）</option>
-              <option value="week">今週（月曜5:00〜月曜4:59）</option>
-              <option value="month">今月（1日5:00〜翌月1日4:59）</option>
+              {/* ★表示は「今日 / 今週 / 今月」だけ */}
+              <option value="today">今日</option>
+              <option value="week">今週</option>
+              <option value="month">今月</option>
             </select>
           </label>
 
@@ -292,7 +318,7 @@ export default function RaidRankingsPage() {
         </div>
 
         <div style={{ marginTop: 8, opacity: 0.75, fontSize: 12 }}>
-          集計範囲: {formatJst(rangeInfo.from)} ～ {formatJst(rangeInfo.to)}
+          集計範囲: {formatJst(rangeInfo.from)} ～ {formatJstRangeEnd(rangeInfo.to)}
         </div>
 
         {error ? <div style={{ marginTop: 8, opacity: 0.9, fontSize: 12 }}>エラー: {error}</div> : null}
