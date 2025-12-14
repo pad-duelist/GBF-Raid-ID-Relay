@@ -2,6 +2,7 @@
 export const dynamic = "force-dynamic";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 type Poster = {
   sender_user_id: string;
@@ -31,6 +32,8 @@ const cardStyle: React.CSSProperties = {
 };
 
 export default function RaidRankingsPage() {
+  const router = useRouter();
+
   const [initialized, setInitialized] = useState(false);
 
   const [groupId, setGroupId] = useState<string>("");
@@ -44,13 +47,20 @@ export default function RaidRankingsPage() {
 
   const timerRef = useRef<number | null>(null);
 
-  // URLは維持: /raids/rankings?groupId=Apoklisi
+  // URL: /raids/rankings?groupId=Apoklisi
   useEffect(() => {
     const sp = new URLSearchParams(window.location.search);
     const g = (sp.get("groupId") ?? sp.get("group") ?? "").trim();
     setGroupId(g);
     setInitialized(true);
   }, []);
+
+  // ✅ 戻る先を常にグループページに固定
+  const handleBack = useCallback(() => {
+    const g = groupId.trim();
+    if (g) router.push(`/g/${encodeURIComponent(g)}`);
+    else router.push(`/`);
+  }, [router, groupId]);
 
   const fetchRankings = useCallback(async () => {
     if (!initialized) return;
@@ -63,7 +73,7 @@ export default function RaidRankingsPage() {
       qs.set("limit", String(limit));
       if (groupId.trim()) qs.set("groupId", groupId.trim());
 
-      // キャッシュ回避ダミー（必要なら有効に）
+      // キャッシュ回避
       qs.set("_t", String(Date.now()));
 
       const res = await fetch(`/api/rankings?${qs.toString()}`, { cache: "no-store" });
@@ -107,6 +117,21 @@ export default function RaidRankingsPage() {
   return (
     <div style={{ padding: 16, color: "white", maxWidth: 980, margin: "0 auto" }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+        <button
+          onClick={handleBack}
+          style={{
+            padding: "9px 12px",
+            borderRadius: 10,
+            border: "1px solid rgba(255,255,255,0.2)",
+            background: "#111827",
+            color: "white",
+            cursor: "pointer",
+            fontWeight: 800,
+          }}
+        >
+          ← グループへ戻る
+        </button>
+
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800 }}>ランキング</h1>
 
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
