@@ -381,7 +381,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     filteredRaidsRef.current = filteredRaids;
   }, [filteredRaids]);
 
-  // ★追加：タブ/ウィンドウがアクティブになった瞬間に「最新ID」を自動コピー
+  // ★修正：タブ/ウィンドウがアクティブになった「瞬間」に、まず現状の最新IDを即コピー（fetch待ちなし）
   useEffect(() => {
     let disposed = false;
 
@@ -395,6 +395,32 @@ function GroupPageInner({ groupId }: { groupId: string }) {
       });
     };
 
+    const applySuppressForAutoCopyEffect = (list: RaidRow[]) => {
+      const bf = bossFilterRef.current;
+      const sf = seriesFilterRef.current;
+      prevFilterRef.current = `${bf}|${sf}`;
+      autoCopyInitializedRef.current = true;
+      seenFilteredRaidIdsRef.current = new Set(list.map((r) => r.id));
+    };
+
+    const doCopy = async (latest: RaidRow) => {
+      if (!latest?.raid_id) return false;
+      if (lastActiveCopiedRaidInternalIdRef.current === latest.id) return false;
+
+      const ok = await writeClipboard(latest.raid_id);
+      if (!ok) return false;
+
+      lastActiveCopiedRaidInternalIdRef.current = latest.id;
+
+      // UI反映（リング＆コピー済み＆メッセージ）
+      setLastAutoCopiedRaidId(latest.id);
+      addToCopied(latest.id);
+      setCopyMessage(`ID ${latest.raid_id} をコピーしました`);
+      setTimeout(() => setCopyMessage(null), 1500);
+
+      return true;
+    };
+
     const copyLatestOnActive = async () => {
       if (disposed) return;
 
@@ -405,52 +431,49 @@ function GroupPageInner({ groupId }: { groupId: string }) {
       if (document.visibilityState !== "visible") return;
       if (!document.hasFocus()) return;
 
-      // まず最新取得を試す（失敗しても現状のfilteredで続行）
-      let list: RaidRow[] = [];
-      try {
-        const merged = await fetchRaidsRef.current();
-
-        const bf = bossFilterRef.current;
-        const sf = seriesFilterRef.current;
-
-        list = merged.filter((r) => {
-          const matchBoss = bf ? getDisplayName(r) === bf : true;
-          const raidSeries = (r.series ?? "").toString().trim();
-          const matchSeries = sf ? raidSeries === sf : true;
-          return matchBoss && matchSeries;
-        });
-      } catch {
-        // noop
+      // 1) ★まず「今見えている filtered（ref）」から即コピー（fetchを待たない）
+      const immediateList = filteredRaidsRef.current;
+      if (immediateList && immediateList.length > 0) {
+        const latestNow = pickLatestByCreatedAt(immediateList);
+        if (latestNow) {
+          await doCopy(latestNow);
+          // 復帰タイミングで autoCopy effect が暴発しないよう抑止
+          applySuppressForAutoCopyEffect(immediateList);
+        }
       }
 
-      if (!list || list.length === 0) {
-        list = filteredRaidsRef.current;
-      }
-      if (!list || list.length === 0) return;
+      // 2) 次に最新取得は“待たずに”走らせる（戻った直後に新しいIDがあったら最終的に上書きできる）
+      fetchRaidsRef
+        .current()
+        .then(async (merged) => {
+          if (disposed) return;
+          if (!merged || merged.length === 0) return;
 
-      const latest = pickLatestByCreatedAt(list);
-      if (!latest?.raid_id) return;
+          // 取得が戻ってきた時点でもアクティブなら
+          if (document.visibilityState !== "visible") return;
+          if (!document.hasFocus()) return;
 
-      // 同じIDの連打を防止
-      if (lastActiveCopiedRaidInternalIdRef.current === latest.id) return;
+          const bf = bossFilterRef.current;
+          const sf = seriesFilterRef.current;
 
-      const ok = await writeClipboard(latest.raid_id);
-      if (!ok) return;
+          const list = merged.filter((r) => {
+            const matchBoss = bf ? getDisplayName(r) === bf : true;
+            const raidSeries = (r.series ?? "").toString().trim();
+            const matchSeries = sf ? raidSeries === sf : true;
+            return matchBoss && matchSeries;
+          });
+          if (!list || list.length === 0) return;
 
-      lastActiveCopiedRaidInternalIdRef.current = latest.id;
+          const latestFetched = pickLatestByCreatedAt(list);
+          if (!latestFetched) return;
 
-      // UI反映（リング＆コピー済み＆メッセージ）
-      setLastAutoCopiedRaidId(latest.id);
-      addToCopied(latest.id);
-      setCopyMessage(`ID ${latest.raid_id} をコピーしました`);
-      setTimeout(() => setCopyMessage(null), 1500);
+          // もし fetch 側の方が新しいIDなら、最終的にそれで上書き
+          await doCopy(latestFetched);
 
-      // この復帰タイミングでの二重コピー（autoCopy effect）を抑止
-      const bf = bossFilterRef.current;
-      const sf = seriesFilterRef.current;
-      prevFilterRef.current = `${bf}|${sf}`;
-      autoCopyInitializedRef.current = true;
-      seenFilteredRaidIdsRef.current = new Set(list.map((r) => r.id));
+          // 抑止更新（fetch結果側の一覧で最新状態に合わせる）
+          applySuppressForAutoCopyEffect(list);
+        })
+        .catch(() => {});
     };
 
     const onVisibilityChange = () => {
