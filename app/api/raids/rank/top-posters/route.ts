@@ -2,57 +2,50 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
+export const dynamic = "force-dynamic";
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: { persistSession: false },
 });
 
-function clampInt(v: number, min: number, max: number): number {
-  if (!Number.isFinite(v)) return min;
-  const n = Math.trunc(v);
-  return Math.max(min, Math.min(max, n));
+function toInt(v: string | null, def: number) {
+  const n = v ? Number(v) : NaN;
+  return Number.isFinite(n) ? Math.floor(n) : def;
 }
 
 export async function GET(req: NextRequest) {
   try {
-    const url = new URL(req.url);
+    const { searchParams } = new URL(req.url);
+    const groupId = searchParams.get("group_id") ?? "";
+    const days = toInt(searchParams.get("days"), 7);
+    const limit = Math.min(Math.max(toInt(searchParams.get("limit"), 10), 1), 50);
 
-    const group_id = (url.searchParams.get("group_id") ?? "").trim();
-    const daysRaw = url.searchParams.get("days");
-    const limitRaw = url.searchParams.get("limit");
-
-    if (!group_id) {
-      return NextResponse.json(
-        { ok: false, error: "group_id is required" },
-        { status: 400 }
-      );
+    if (!groupId) {
+      return NextResponse.json({ ok: false, error: "group_id is required" }, { status: 400 });
     }
 
-    // UI想定: days=365 を「全期間」扱いにする（SQL側で p_days>=365 なら全期間にしている前提）
-    const days = clampInt(daysRaw ? Number(daysRaw) : 7, 1, 365);
-    const limit = clampInt(limitRaw ? Number(limitRaw) : 20, 1, 50);
+    // 「統合で順位が繰り上がる」取りこぼし防止に、少し多めに取得しておくのが安全
+    const fetchLimit = Math.min(Math.max(limit * 5, limit), 50);
 
-    const { data, error } = await supabase.rpc("top_posters", {
-      p_group_id: group_id,
+    const { data, error } = await supabase.rpc("get_top_posters_merged", {
+      p_group_id: groupId,
       p_days: days,
-      p_limit: limit,
+      p_limit: fetchLimit,
     });
 
     if (error) {
-      console.error("rpc top_posters error:", error);
-      return NextResponse.json(
-        { ok: false, error: error.message || "rpc error" },
-        { status: 500 }
-      );
+      console.error("[top-posters] rpc error:", error);
+      return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ ok: true, data });
-  } catch (err: any) {
-    console.error(err);
-    return NextResponse.json(
-      { ok: false, error: err?.message || "server error" },
-      { status: 500 }
-    );
+    // API側ですでに統合＆並び替え済み。念のためlimitで切る。
+    const out = (data ?? []).slice(0, limit);
+
+    return NextResponse.json({ ok: true, data: out });
+  } catch (e) {
+    console.error("[top-posters] fatal:", e);
+    return NextResponse.json({ ok: false, error: "internal error" }, { status: 500 });
   }
 }

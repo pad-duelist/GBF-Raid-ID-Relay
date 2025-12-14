@@ -6,17 +6,21 @@ import React, { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 
 type Poster = {
-  sender_user_id: string | null;
-  // API側で「期間内にそのユーザーが最後に使った user_name」を返す想定
-  user_name: string | null;
+  sender_user_id: string | null; // 表示はしない（キー用途）
+  user_name: string | null; // API側で「最後に使った名前」を返す前提
   post_count: number;
-
-  // （任意）もしAPIが返せるなら、統合時に「本当に最後に使った名前」を厳密に選べます
-  // ※無くても動きます
-  last_used_at?: string | null;
+  last_used_at?: string | null; // 任意（返ってきても表示はしない）
 };
 
-type Battle = { battle_name: string; post_count: number };
+type Battle = {
+  battle_name: string;
+  post_count: number;
+};
+
+function toInt(v: string, def: number) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.floor(n) : def;
+}
 
 function shortId(id: string, head = 8): string {
   if (!id) return "";
@@ -24,8 +28,6 @@ function shortId(id: string, head = 8): string {
 }
 
 function displayPosterName(p: Poster): string {
-  // 表示名は「最後に使用した user_name」
-  // null/空の場合は sender_user_id をフォールバック（表示名として）
   const name = (p.user_name ?? "").trim();
   if (name) return name;
 
@@ -34,74 +36,9 @@ function displayPosterName(p: Poster): string {
   return "(不明)";
 }
 
-// ==== sender_user_id 統合（例外ルール）====
-// 指定の2つは同一ユーザー扱いにしてランキングを統合する
-const MERGE_SENDER_IDS = new Set<string>([
-  "8cf84c8f-2052-47fb-a3a9-cf7f2980eef4",
-  "86f9ace9-dad7-4daa-9c28-adb44759c252",
-]);
-
-// 代表ID（DBには保存せず、フロント側の集計キーとしてのみ使用）
-const CANONICAL_SENDER_ID = "8cf84c8f-2052-47fb-a3a9-cf7f2980eef4";
-
-function normalizeSenderId(id: string | null): string | null {
-  if (!id) return id;
-  return MERGE_SENDER_IDS.has(id) ? CANONICAL_SENDER_ID : id;
-}
-
-function mergePosters(posters: Poster[]): Poster[] {
-  const map = new Map<string, Poster>();
-
-  for (const p of posters) {
-    const normalized = normalizeSenderId(p.sender_user_id);
-    const key = normalized ?? "__NULL__";
-
-    const existing = map.get(key);
-    if (!existing) {
-      map.set(key, {
-        ...p,
-        sender_user_id: key === "__NULL__" ? null : key,
-      });
-      continue;
-    }
-
-    // 件数は合算
-    existing.post_count += p.post_count;
-
-    // 表示名は「最後に使った名前」優先
-    // APIが last_used_at を返せるならそれで厳密に比較し、無い場合は安全なフォールバック
-    const pTime = p.last_used_at ?? null;
-    const eTime = existing.last_used_at ?? null;
-
-    if (pTime && (!eTime || new Date(pTime).getTime() > new Date(eTime).getTime())) {
-      existing.user_name = p.user_name;
-      existing.last_used_at = p.last_used_at ?? existing.last_used_at;
-    } else {
-      // フォールバック:
-      // 1) 既存が空で、新しい方が名前を持っていれば採用
-      // 2) 両方名前があるなら、代表ID側の名前を優先（揺れを防ぐ）
-      const existingName = (existing.user_name ?? "").trim();
-      const pName = (p.user_name ?? "").trim();
-
-      if (!existingName && pName) {
-        existing.user_name = p.user_name;
-      } else if (existingName && pName) {
-        const existingWasCanonical = existing.sender_user_id === CANONICAL_SENDER_ID;
-        const pWasCanonical = normalized === CANONICAL_SENDER_ID;
-
-        if (!existingWasCanonical && pWasCanonical) {
-          existing.user_name = p.user_name;
-          existing.last_used_at = p.last_used_at ?? existing.last_used_at;
-        }
-      }
-    }
-  }
-
-  return Array.from(map.values());
-}
-
 export default function RaidRankingsPage() {
   const router = useRouter();
+
   const [groupId, setGroupId] = useState<string>("");
   const [posters, setPosters] = useState<Poster[]>([]);
   const [battles, setBattles] = useState<Battle[]>([]);
@@ -111,11 +48,13 @@ export default function RaidRankingsPage() {
   const intervalRef = useRef<number | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // URL クエリから groupId を読む（?groupId=xxxx）
   useEffect(() => {
     const readGroupIdFromUrl = () => {
       const params = new URLSearchParams(window.location.search);
       setGroupId(params.get("groupId") || "");
     };
+
     readGroupIdFromUrl();
     window.addEventListener("popstate", readGroupIdFromUrl);
     return () => window.removeEventListener("popstate", readGroupIdFromUrl);
@@ -123,40 +62,43 @@ export default function RaidRankingsPage() {
 
   async function fetchRankings() {
     if (!groupId) return;
+
     setLoading(true);
     try {
-      // 統合で「11位と1位を足したら本来1位」みたいなケースを取りこぼさないため、
-      // 取得は最大50件にして、表示は limit で切ります（表示ルールはそのまま）
-      const fetchLimit = 50;
+      const fetchLimit = Math.min(Math.max(limit * 5, limit), 50);
 
       const [pRes, bRes] = await Promise.all([
         fetch(
           `/api/raids/rank/top-posters?group_id=${encodeURIComponent(
             groupId
-          )}&days=${days}&limit=${fetchLimit}`
+          )}&days=${days}&limit=${fetchLimit}`,
+          { cache: "no-store" }
         ),
         fetch(
           `/api/raids/rank/top-battles?group_id=${encodeURIComponent(
             groupId
-          )}&days=${days}&limit=${fetchLimit}`
+          )}&days=${days}&limit=${fetchLimit}`,
+          { cache: "no-store" }
         ),
       ]);
 
       const pj = await pRes.json();
       const bj = await bRes.json();
 
-      const rawPosters = pj.ok ? (pj.data as Poster[]) : [];
-      const mergedPosters = mergePosters(rawPosters)
-        .sort((a, b) => b.post_count - a.post_count)
+      const rawPosters: Poster[] = pj?.ok ? (pj.data as Poster[]) : [];
+      const rawBattles: Battle[] = bj?.ok ? (bj.data as Battle[]) : [];
+
+      // APIが統合済み・最新名確定済み想定。念のため並び＆limit適用。
+      const nextPosters = [...rawPosters]
+        .sort((a, b) => (b.post_count ?? 0) - (a.post_count ?? 0))
         .slice(0, limit);
 
-      const rawBattles = bj.ok ? (bj.data as Battle[]) : [];
-      const limitedBattles = rawBattles
-        .sort((a, b) => b.post_count - a.post_count)
+      const nextBattles = [...rawBattles]
+        .sort((a, b) => (b.post_count ?? 0) - (a.post_count ?? 0))
         .slice(0, limit);
 
-      setPosters(mergedPosters);
-      setBattles(limitedBattles);
+      setPosters(nextPosters);
+      setBattles(nextBattles);
     } catch (e) {
       console.error(e);
     } finally {
@@ -177,6 +119,7 @@ export default function RaidRankingsPage() {
       if (intervalRef.current) clearInterval(intervalRef.current);
       intervalRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId, days, limit, auto]);
 
   function handleBackToGroup() {
@@ -193,21 +136,20 @@ export default function RaidRankingsPage() {
         <h1 className="text-xl font-bold">
           ランキング（グループ: {groupId || "未指定"}）
         </h1>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleBackToGroup}
-            className="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-sm"
-          >
-            グループに戻る
-          </button>
-        </div>
+
+        <button
+          onClick={handleBackToGroup}
+          className="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-sm"
+        >
+          グループに戻る
+        </button>
       </div>
 
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <label className="text-white">期間(日):</label>
         <select
           value={days}
-          onChange={(e) => setDays(Number(e.target.value))}
+          onChange={(e) => setDays(toInt(e.target.value, 7))}
           className="border rounded px-2 py-1 text-black"
         >
           <option value={1}>1</option>
@@ -222,7 +164,7 @@ export default function RaidRankingsPage() {
           value={limit}
           min={1}
           max={50}
-          onChange={(e) => setLimit(Number(e.target.value))}
+          onChange={(e) => setLimit(Math.min(Math.max(toInt(e.target.value, 10), 1), 50))}
           className="w-20 border rounded px-2 py-1 text-black"
         />
 
@@ -258,10 +200,8 @@ export default function RaidRankingsPage() {
                   key={`${p.sender_user_id ?? "unknown"}-${i}`}
                   className="flex justify-between items-center bg-slate-800 rounded px-2 py-1"
                 >
-                  <div className="flex flex-col">
-                    <div>
-                      <strong>{i + 1}.</strong> {displayPosterName(p)}
-                    </div>
+                  <div>
+                    <strong>{i + 1}.</strong> {displayPosterName(p)}
                   </div>
                   <div>{p.post_count}</div>
                 </li>
