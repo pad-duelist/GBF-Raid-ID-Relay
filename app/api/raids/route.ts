@@ -41,8 +41,8 @@ async function resolveGroupUuidCandidates(groupIdParam: string): Promise<string[
     return Array.from(candidates);
   }
 
-  // UUIDでない場合は groups テーブルから解決を試す
-  // ※ 動的カラム指定を避ける（slug/name/group_name を固定で試す）
+  // UUIDでない場合は groups テーブルから解決を試す（いまは id/name の想定）
+  // ※ slug / group_name は存在しない環境でも try/catch で安全にスルー
   try {
     const r = await sb.from("groups").select("id").eq("slug", groupIdParam).limit(10);
     if (!r.error && r.data?.length) {
@@ -120,6 +120,34 @@ async function findMembershipMatchedGroupId(opts: {
   }
 
   return { ok: false, statusCode: 403, reason: "not_member", resolvedGroupIds };
+}
+
+// ===== group_id -> group_name 解決（groups.id から groups.name を取得） =====
+const GROUP_NAME_TTL = 5 * 60 * 1000;
+const groupNameCache = new Map<string, { name: string | null; ts: number }>();
+
+async function getGroupNameCached(groupId: string): Promise<string | null> {
+  if (!groupId) return null;
+
+  const now = Date.now();
+  const cached = groupNameCache.get(groupId);
+  if (cached && now - cached.ts < GROUP_NAME_TTL) return cached.name;
+
+  try {
+    const { data, error } = await sb.from("groups").select("name").eq("id", groupId).maybeSingle();
+    if (error) {
+      console.error("getGroupNameCached error:", error);
+      groupNameCache.set(groupId, { name: null, ts: now });
+      return null;
+    }
+    const name = (data as any)?.name ? String((data as any).name) : null;
+    groupNameCache.set(groupId, { name, ts: now });
+    return name;
+  } catch (e) {
+    console.error("getGroupNameCached exception:", e);
+    groupNameCache.set(groupId, { name: null, ts: now });
+    return null;
+  }
 }
 
 // ===== ボス名ブロックリスト関連 =====
@@ -349,6 +377,9 @@ export async function GET(req: NextRequest) {
 
   const matchedGroupId = mem.matchedGroupId;
 
+  // ★ group_name を groups(id)->name から解決（group_id -> group_name 変換）
+  const resolvedGroupName = await getGroupNameCached(matchedGroupId);
+
   // 表示数（フィルタ後にこの件数に揃える）
   const requestedLimit = isNaN(Number(limitParam)) ? 50 : Math.max(1, Number(limitParam));
   // 先に多めに取って、参戦者数フィルタで減っても requestedLimit 返せるようにする
@@ -361,6 +392,7 @@ export async function GET(req: NextRequest) {
         [
           "id",
           "group_id",
+          "group_name", // ←既存カラムも一応返す（ただし最終的に groups.name を優先）
           "raid_id",
           "boss_name",
           "battle_name",
@@ -404,7 +436,13 @@ export async function GET(req: NextRequest) {
       (r) => !shouldSuppressByMembers((r as any)?.member_current, (r as any)?.member_max)
     );
 
-    return NextResponse.json(filtered.slice(0, requestedLimit), { status: 200 });
+    // ★ group_id -> group_name 変換結果をレスポンスに付与（groups.name を優先）
+    const enriched = filtered.map((r) => ({
+      ...r,
+      group_name: resolvedGroupName ?? r.group_name ?? null,
+    }));
+
+    return NextResponse.json(enriched.slice(0, requestedLimit), { status: 200 });
   } catch (e) {
     console.error("[GET /api/raids] error:", e);
     return NextResponse.json({ error: "internal error" }, { status: 500 });
@@ -465,6 +503,9 @@ export async function POST(req: NextRequest) {
 
     const matchedGroupId = mem.matchedGroupId;
 
+    // ★ group_name を groups(id)->name から解決（保存にも使う）
+    const resolvedGroupName = await getGroupNameCached(matchedGroupId);
+
     // bossName / battleName を統一名に変換
     try {
       bossName = (await mapNormalize(bossName)) || (bossName ?? null);
@@ -505,9 +546,11 @@ export async function POST(req: NextRequest) {
     }
 
     // INSERT（group_id は matchedGroupId(UUID) を入れる）
+    // ついでに group_name も保存（groups.name を参照）
     const { error } = await sb.from("raids").insert([
       {
         group_id: matchedGroupId,
+        group_name: resolvedGroupName ?? null,
         raid_id: raidId,
         boss_name: bossName ?? null,
         battle_name: battleName ?? null,
