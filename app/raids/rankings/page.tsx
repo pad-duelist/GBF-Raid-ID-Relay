@@ -2,13 +2,14 @@
 "use client";
 export const dynamic = "force-dynamic";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 
 type Poster = {
-  sender_user_id: string | null;
-  user_name: string | null;
+  sender_user_id: string | null; // 表示はしない（キー用途）
+  user_name: string | null; // API側で「最後に使った名前」を返す前提
   post_count: number;
+  last_used_at?: string | null; // 任意（返ってきても表示はしない）
 };
 
 type Battle = {
@@ -16,217 +17,218 @@ type Battle = {
   post_count: number;
 };
 
+function toInt(v: string, def: number) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.floor(n) : def;
+}
+
+function shortId(id: string, head = 8): string {
+  if (!id) return "";
+  return id.length <= head ? id : `${id.slice(0, head)}…`;
+}
+
+function displayPosterName(p: Poster): string {
+  const name = (p.user_name ?? "").trim();
+  if (name) return name;
+
+  const uid = (p.sender_user_id ?? "").trim();
+  if (uid) return `(不明: ${shortId(uid)})`;
+  return "(不明)";
+}
+
 export default function RaidRankingsPage() {
   const router = useRouter();
 
   const [groupId, setGroupId] = useState<string>("");
-  const [groupSlug, setGroupSlug] = useState<string>("");
-
   const [posters, setPosters] = useState<Poster[]>([]);
   const [battles, setBattles] = useState<Battle[]>([]);
-
   const [days, setDays] = useState<number>(7);
   const [limit, setLimit] = useState<number>(10);
   const [auto, setAuto] = useState<boolean>(true);
-
-  const [loading, setLoading] = useState<boolean>(false);
-  const [errorText, setErrorText] = useState<string | null>(null);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-
   const intervalRef = useRef<number | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  // URLクエリを読む（groupId=uuid / groupSlug=name）
+  // URL クエリから groupId を読む（?groupId=xxxx）
   useEffect(() => {
-    const readFromUrl = () => {
+    const readGroupIdFromUrl = () => {
       const params = new URLSearchParams(window.location.search);
       setGroupId(params.get("groupId") || "");
-      setGroupSlug(params.get("groupSlug") || "");
     };
 
-    readFromUrl();
-    window.addEventListener("popstate", readFromUrl);
-    return () => window.removeEventListener("popstate", readFromUrl);
+    readGroupIdFromUrl();
+    window.addEventListener("popstate", readGroupIdFromUrl);
+    return () => window.removeEventListener("popstate", readGroupIdFromUrl);
   }, []);
 
-  const displayGroup = useMemo(() => groupSlug || groupId || "未指定", [groupSlug, groupId]);
-
-  const fetchRankings = async () => {
-    if (!groupId) {
-      setErrorText("groupId が未指定です（URLに groupId が必要です）");
-      return;
-    }
+  async function fetchRankings() {
+    if (!groupId) return;
 
     setLoading(true);
-    setErrorText(null);
-
     try {
-      const qs = new URLSearchParams();
-      qs.set("group_id", groupId);
-      qs.set("days", String(days));
-      qs.set("limit", String(limit));
+      const fetchLimit = Math.min(Math.max(limit * 5, limit), 50);
 
-      const [r1, r2] = await Promise.all([
-        fetch(`/api/raids/rank/top-posters?${qs.toString()}`, { cache: "no-store" }),
-        fetch(`/api/raids/rank/top-battles?${qs.toString()}`, { cache: "no-store" }),
+      const [pRes, bRes] = await Promise.all([
+        fetch(
+          `/api/raids/rank/top-posters?group_id=${encodeURIComponent(
+            groupId
+          )}&days=${days}&limit=${fetchLimit}`,
+          { cache: "no-store" }
+        ),
+        fetch(
+          `/api/raids/rank/top-battles?group_id=${encodeURIComponent(
+            groupId
+          )}&days=${days}&limit=${fetchLimit}`,
+          { cache: "no-store" }
+        ),
       ]);
 
-      if (!r1.ok) throw new Error(`top-posters fetch failed: ${r1.status}`);
-      if (!r2.ok) throw new Error(`top-battles fetch failed: ${r2.status}`);
+      const pj = await pRes.json();
+      const bj = await bRes.json();
 
-      const j1 = await r1.json();
-      const j2 = await r2.json();
+      const rawPosters: Poster[] = pj?.ok ? (pj.data as Poster[]) : [];
+      const rawBattles: Battle[] = bj?.ok ? (bj.data as Battle[]) : [];
 
-      if (!j1?.ok) throw new Error(j1?.error || "top-posters error");
-      if (!j2?.ok) throw new Error(j2?.error || "top-battles error");
+      // APIが統合済み・最新名確定済み想定。念のため並び＆limit適用。
+      const nextPosters = [...rawPosters]
+        .sort((a, b) => (b.post_count ?? 0) - (a.post_count ?? 0))
+        .slice(0, limit);
 
-      setPosters(Array.isArray(j1.data) ? j1.data : []);
-      setBattles(Array.isArray(j2.data) ? j2.data : []);
-      setLastUpdated(new Date());
-    } catch (e: any) {
+      const nextBattles = [...rawBattles]
+        .sort((a, b) => (b.post_count ?? 0) - (a.post_count ?? 0))
+        .slice(0, limit);
+
+      setPosters(nextPosters);
+      setBattles(nextBattles);
+    } catch (e) {
       console.error(e);
-      setErrorText(e?.message ?? "ランキング取得に失敗しました");
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  // 初回取得
   useEffect(() => {
     if (!groupId) return;
+
     fetchRankings();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupId]);
 
-  // 自動更新
-  useEffect(() => {
-    if (!auto) return;
-    if (!groupId) return;
-
-    intervalRef.current = window.setInterval(() => {
-      fetchRankings();
-    }, 5000) as unknown as number;
+    if (auto) {
+      intervalRef.current = window.setInterval(fetchRankings, 30_000) as unknown as number;
+    }
 
     return () => {
-      if (intervalRef.current) window.clearInterval(intervalRef.current);
+      if (intervalRef.current) clearInterval(intervalRef.current);
       intervalRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auto, groupId, days, limit]);
+  }, [groupId, days, limit, auto]);
 
-  const handleBackToGroup = () => {
-    const key = groupSlug || displayGroup;
-    if (key && key !== "未指定") router.push(`/g/${encodeURIComponent(key)}`);
-    else router.back();
-  };
+  function handleBackToGroup() {
+    if (groupId) {
+      router.push(`/g/${encodeURIComponent(groupId)}`);
+    } else {
+      router.back();
+    }
+  }
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-50 p-4">
-      <div className="max-w-3xl mx-auto space-y-4">
-        <header className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-xl font-bold">ランキング</div>
-            <div className="text-sm text-slate-300">グループ: {displayGroup}</div>
-          </div>
+    <div className="p-4 bg-slate-900 min-h-screen text-slate-50">
+      <div className="flex items-center justify-between mb-3">
+        <h1 className="text-xl font-bold">
+          ランキング（グループ: {groupId || "未指定"}）
+        </h1>
 
-          <button
-            type="button"
-            onClick={handleBackToGroup}
-            className="bg-slate-200 hover:bg-slate-100 text-black rounded px-3 py-2 text-sm border border-slate-400"
-          >
-            グループに戻る
-          </button>
-        </header>
+        <button
+          onClick={handleBackToGroup}
+          className="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-sm"
+        >
+          グループに戻る
+        </button>
+      </div>
 
-        <div className="border border-slate-700 rounded p-3 bg-slate-800 space-y-3">
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="flex flex-col">
-              <label className="text-sm text-white">期間(日)</label>
-              <input
-                type="number"
-                min={1}
-                max={30}
-                value={days}
-                onChange={(e) => setDays(Number(e.target.value))}
-                className="bg-white text-black rounded px-2 py-1 w-24 border border-slate-400"
-              />
-            </div>
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <label className="text-white">期間(日):</label>
+        <select
+          value={days}
+          onChange={(e) => setDays(toInt(e.target.value, 7))}
+          className="border rounded px-2 py-1 text-black"
+        >
+          <option value={1}>1</option>
+          <option value={7}>7</option>
+          <option value={30}>30</option>
+          <option value={365}>全期間</option>
+        </select>
 
-            <div className="flex flex-col">
-              <label className="text-sm text-white">表示数</label>
-              <input
-                type="number"
-                min={1}
-                max={50}
-                value={limit}
-                onChange={(e) => setLimit(Number(e.target.value))}
-                className="bg-white text-black rounded px-2 py-1 w-24 border border-slate-400"
-              />
-            </div>
+        <label className="text-white">表示数:</label>
+        <input
+          type="number"
+          value={limit}
+          min={1}
+          max={50}
+          onChange={(e) => setLimit(Math.min(Math.max(toInt(e.target.value, 10), 1), 50))}
+          className="w-20 border rounded px-2 py-1 text-black"
+        />
 
-            <div className="flex items-center gap-2">
-              <label className="text-sm text-white">自動更新</label>
-              <input
-                type="checkbox"
-                checked={auto}
-                onChange={(e) => setAuto(e.target.checked)}
-                className="w-5 h-5"
-              />
-            </div>
+        <label className="text-white flex items-center gap-1">
+          <input
+            type="checkbox"
+            checked={auto}
+            onChange={() => setAuto((s) => !s)}
+            className="w-4 h-4"
+          />
+          自動更新
+        </label>
 
-            <button
-              type="button"
-              onClick={fetchRankings}
-              className="bg-yellow-500 hover:bg-yellow-400 text-black rounded px-3 py-2 text-sm border border-yellow-600"
-            >
-              手動更新
-            </button>
+        <button
+          onClick={fetchRankings}
+          className="ml-2 px-3 py-1 bg-white text-black rounded"
+        >
+          手動更新
+        </button>
 
-            <div className="text-xs text-slate-300">
-              {loading ? "取得中..." : lastUpdated ? `更新: ${lastUpdated.toLocaleTimeString()}` : ""}
-            </div>
-          </div>
+        {loading && <span className="ml-2 text-sm text-gray-300">読み込み中…</span>}
+      </div>
 
-          {errorText && <div className="text-sm text-red-300">{errorText}</div>}
-        </div>
-
-        <section className="grid grid-cols-1 gap-4">
-          <div className="border border-slate-700 rounded p-3 bg-slate-800">
-            <div className="text-lg font-bold mb-2">投稿者ランキング</div>
-            <div className="space-y-2">
-              {posters.map((p, i) => (
-                <div
-                  key={`${p.user_name ?? "noname"}-${i}`}
-                  className="flex items-center justify-between border border-slate-700 rounded px-3 py-2 bg-slate-900/30"
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <section>
+          <h2 className="font-semibold mb-2">投稿者ランキング</h2>
+          <ol className="space-y-2">
+            {posters.length === 0 ? (
+              <li>データがありません</li>
+            ) : (
+              posters.map((p, i) => (
+                <li
+                  key={`${p.sender_user_id ?? "unknown"}-${i}`}
+                  className="flex justify-between items-center bg-slate-800 rounded px-2 py-1"
                 >
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold truncate">
-                      {p.user_name && p.user_name.trim().length > 0 ? p.user_name : "（名無し）"}
-                    </div>
+                  <div>
+                    <strong>{i + 1}.</strong> {displayPosterName(p)}
                   </div>
-                  <div className="text-sm font-mono">{p.post_count}</div>
-                </div>
-              ))}
-              {posters.length === 0 && <div className="text-sm text-slate-300">データがありません</div>}
-            </div>
-          </div>
+                  <div>{p.post_count}</div>
+                </li>
+              ))
+            )}
+          </ol>
+        </section>
 
-          <div className="border border-slate-700 rounded p-3 bg-slate-800">
-            <div className="text-lg font-bold mb-2">マルチランキング</div>
-            <div className="space-y-2">
-              {battles.map((b, i) => (
-                <div
-                  key={`${b.battle_name}-${i}`}
-                  className="flex items-center justify-between border border-slate-700 rounded px-3 py-2 bg-slate-900/30"
+        <section>
+          <h2 className="font-semibold mb-2">人気バトルランキング</h2>
+          <ol className="space-y-2">
+            {battles.length === 0 ? (
+              <li>データがありません</li>
+            ) : (
+              battles.map((b, i) => (
+                <li
+                  key={`${b.battle_name ?? "unknown"}-${i}`}
+                  className="flex justify-between items-center bg-slate-800 rounded px-2 py-1"
                 >
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold truncate">{b.battle_name}</div>
+                  <div>
+                    <strong>{i + 1}.</strong> {b.battle_name}
                   </div>
-                  <div className="text-sm font-mono">{b.post_count}</div>
-                </div>
-              ))}
-              {battles.length === 0 && <div className="text-sm text-slate-300">データがありません</div>}
-            </div>
-          </div>
+                  <div>{b.post_count}</div>
+                </li>
+              ))
+            )}
+          </ol>
         </section>
       </div>
     </div>
