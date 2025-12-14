@@ -31,10 +31,13 @@ const NOTIFY_VOLUME_KEY = "gbf-raid-notify-volume";
 const AUTO_COPY_ENABLED_KEY = "gbf-raid-auto-copy-enabled";
 const COPIED_IDS_KEY = "gbf-copied-raid-ids";
 
+/**
+ * ★ラッパー：アクセス判定だけを担当
+ * Hook の順序が崩れないように、UI本体は別コンポーネントへ切り出す
+ */
 export default function GroupPageClient({ groupId }: { groupId: string }) {
   const router = useRouter();
 
-  // ===== アクセス制御（グループ所属チェック） =====
   const [accessOk, setAccessOk] = useState(false);
   const [accessChecking, setAccessChecking] = useState(true);
   const [accessErrorText, setAccessErrorText] = useState<string | null>(null);
@@ -43,20 +46,20 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
     let cancelled = false;
 
     (async () => {
-      if (typeof window === "undefined") return;
-
-      setAccessChecking(true);
-      setAccessErrorText(null);
-      setAccessOk(false);
-
-      const userId = window.localStorage.getItem("extensionUserId");
-      if (!userId || userId.trim().length === 0) {
-        setAccessErrorText("ユーザーIDが未設定です。extension-token ページへ移動します…");
-        router.replace("/extension-token");
-        return;
-      }
-
       try {
+        if (typeof window === "undefined") return;
+
+        setAccessChecking(true);
+        setAccessErrorText(null);
+        setAccessOk(false);
+
+        const userId = window.localStorage.getItem("extensionUserId");
+        if (!userId || userId.trim().length === 0) {
+          setAccessErrorText("ユーザーIDが未設定です。extension-token へ移動します…");
+          router.replace("/extension-token");
+          return;
+        }
+
         const res = await fetch(
           `/api/group-access?groupId=${encodeURIComponent(groupId)}&userId=${encodeURIComponent(
             userId.trim()
@@ -65,26 +68,23 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
         );
 
         if (!res.ok) {
-          setAccessErrorText("グループ権限の確認に失敗しました。extension-token ページへ移動します…");
+          setAccessErrorText("グループ権限の確認に失敗しました。extension-token へ移動します…");
           router.replace("/extension-token");
           return;
         }
 
         const json = await res.json();
         if (!json?.allowed) {
-          setAccessErrorText("このグループへのアクセス権限がありません。extension-token ページへ移動します…");
+          setAccessErrorText("このグループへのアクセス権限がありません。extension-token へ移動します…");
           router.replace("/extension-token");
           return;
         }
 
-        if (!cancelled) {
-          setAccessOk(true);
-        }
+        if (!cancelled) setAccessOk(true);
       } catch (e) {
         console.error("group access check failed", e);
-        setAccessErrorText("グループ権限の確認中にエラーが発生しました。extension-token ページへ移動します…");
+        setAccessErrorText("グループ権限の確認中にエラーが発生しました。extension-token へ移動します…");
         router.replace("/extension-token");
-        return;
       } finally {
         if (!cancelled) setAccessChecking(false);
       }
@@ -95,7 +95,6 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
     };
   }, [groupId, router]);
 
-  // 権限確認が終わるまで表示しない（チラ見え防止）
   if (!accessOk) {
     return (
       <div className="min-h-screen bg-slate-900 text-slate-50 p-4">
@@ -109,7 +108,16 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
     );
   }
 
-  // ===== ここから既存ロジック =====
+  // accessOk になったら UI本体へ（Hook順序が崩れない）
+  return <GroupPageInner groupId={groupId} />;
+}
+
+/**
+ * ★UI本体（元の GroupPageClient のロジック）
+ */
+function GroupPageInner({ groupId }: { groupId: string }) {
+  const router = useRouter();
+
   const [raids, setRaids] = useState<RaidRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [bossFilter, setBossFilter] = useState<string>("");
@@ -132,7 +140,6 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
   const battleMap = useBattleNameMap();
   const { map: battleMappingMap } = useBattleMapping();
 
-  // 前回の全レコードIDセット（差分検出用）
   const prevAllIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -188,6 +195,7 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
       const res = await fetch(`/api/raids?${query.toString()}`, {
         cache: "no-store",
       });
+
       if (!res.ok) {
         console.error("failed to fetch raids", res.status);
         setRaids([]);
@@ -195,11 +203,8 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
       }
 
       const json = await res.json();
-      console.debug("/api/raids raw:", json);
-
       const rawData: RaidRow[] = Array.isArray(json) ? json : (json.raids as RaidRow[]) ?? [];
 
-      // マッピングを使って series を注入する（既存の r.series が空ならマッピングを使う）
       const merged = rawData.map((r) => {
         const boss = r.boss_name?.trim() || "";
         const battle = r.battle_name?.trim() || "";
@@ -217,16 +222,6 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
         return { ...r, series: mergedSeries };
       });
 
-      console.debug(
-        "merged sample (first 10):",
-        merged.slice(0, 10).map((r) => ({
-          id: r.id,
-          raid_id: r.raid_id,
-          display: r.boss_name || r.battle_name,
-          series: r.series,
-        }))
-      );
-
       setRaids(merged);
     } catch (e) {
       console.error("fetchRaids error", e);
@@ -236,16 +231,13 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
     }
   };
 
-  // groupId やマッピングが変わったら再取得（権限OKの時だけ）
   useEffect(() => {
-    if (!accessOk) return;
-
     setLoading(true);
     fetchRaids();
     const timer = setInterval(fetchRaids, 1000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessOk, groupId, battleMappingMap]);
+  }, [groupId, battleMappingMap]);
 
   async function copyId(text: string, internalId?: string) {
     try {
@@ -253,9 +245,7 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
       setCopyMessage(`ID ${text} をコピーしました`);
       setTimeout(() => setCopyMessage(null), 1500);
 
-      if (internalId) {
-        addToCopied(internalId);
-      }
+      if (internalId) addToCopied(internalId);
     } catch (e) {
       console.error(e);
     }
@@ -307,7 +297,7 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
     if (looksLikeUrl(raid.battle_name)) return raid.battle_name as string;
     if (looksLikeUrl(raid.boss_name)) return raid.boss_name as string;
     const name = getDisplayName(raid);
-    return battleMap[name];
+    return (battleMap as any)?.[name];
   };
 
   const uniqueBosses = Array.from(
@@ -318,7 +308,6 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
     )
   );
 
-  // series の正規化＋カウント（内部で件数は保持するが表示には使わない）
   const seriesCountMap = raids.reduce<Record<string, number>>((acc, r) => {
     const raw = (r.series ?? "").toString();
     const normalized = raw.replace(/\u3000/g, " ").trim();
@@ -329,7 +318,6 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
 
   const uniqueSeries = Object.keys(seriesCountMap).sort();
 
-  // 両方のフィルタを適用（表示用）
   const filteredRaids = raids.filter((raid) => {
     const matchBoss = bossFilter ? getDisplayName(raid) === bossFilter : true;
     const raidSeries = (raid.series ?? "").toString().trim();
@@ -337,27 +325,22 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
     return matchBoss && matchSeries;
   });
 
-  // --- 通知ロジック（差分検出して、差分の中に現在のフィルタに合致するレコードがあれば通知） ---
   useEffect(() => {
     if (!raids) return;
 
     const currentIdsSet = new Set(raids.map((r) => r.id));
     const prev = prevAllIdsRef.current;
 
-    // 初回（prev が空）は初期化のみして通知しない
     if (prev.size === 0) {
       prevAllIdsRef.current = currentIdsSet;
       return;
     }
 
-    // 差分（新着ID）を抽出
     const newIds = raids.filter((r) => !prev.has(r.id));
-    // 更新しておく（次回用）
     prevAllIdsRef.current = currentIdsSet;
 
     if (newIds.length === 0) return;
 
-    // 新着のうち、現在のフィルタに合致するものがあるか確認
     const hasMatch = newIds.some((r) => {
       const matchBoss = bossFilter ? getDisplayName(r) === bossFilter : true;
       const raidSeries = (r.series ?? "").toString().trim();
@@ -365,12 +348,9 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
       return matchBoss && matchSeries;
     });
 
-    if (hasMatch) {
-      playNotifySound();
-    }
+    if (hasMatch) playNotifySound();
   }, [raids, bossFilter, seriesFilter, playNotifySound]);
 
-  // --- 自動コピーのロジック（フィルタされた一覧の差分を監視） ---
   useEffect(() => {
     if (!filteredRaids || filteredRaids.length === 0) {
       seenFilteredRaidIdsRef.current = new Set();
@@ -393,25 +373,19 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
       return;
     }
 
-    const newlyAdded = filteredRaids.filter(
-      (raid) => !seenFilteredRaidIdsRef.current.has(raid.id)
-    );
+    const newlyAdded = filteredRaids.filter((raid) => !seenFilteredRaidIdsRef.current.has(raid.id));
 
     if (newlyAdded.length > 0) {
       const target = newlyAdded[0];
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard
-          .writeText(target.raid_id)
-          .then(() => {
-            setLastAutoCopiedRaidId(target.id);
-            addToCopied(target.id);
-            setCopyMessage(`ID ${target.raid_id} をコピーしました`);
-            setTimeout(() => setCopyMessage(null), 1500);
-          })
-          .catch((err) => {
-            console.error("自動コピーに失敗しました:", err);
-          });
-      }
+      navigator.clipboard
+        .writeText(target.raid_id)
+        .then(() => {
+          setLastAutoCopiedRaidId(target.id);
+          addToCopied(target.id);
+          setCopyMessage(`ID ${target.raid_id} をコピーしました`);
+          setTimeout(() => setCopyMessage(null), 1500);
+        })
+        .catch((err) => console.error("自動コピーに失敗しました:", err));
     }
 
     seenFilteredRaidIdsRef.current = currentIds;
@@ -419,27 +393,24 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
 
   const normalizePercent = (raw: number | null | undefined): number | null => {
     if (raw == null) return null;
-    // 小数 (0.0〜1.0) の可能性を考慮
     if (raw <= 1) return raw * 100;
     return raw;
   };
 
   const hpPercentStyle = (raw: number | null | undefined): React.CSSProperties => {
     const p = normalizePercent(raw);
-    if (p == null) return { color: "#94a3b8" }; // slate-400
-    // 優先度に注意：上から判定
-    if (p >= 99) return { color: "#50d552", fontWeight: 600 }; // 99%以上
-    if (p >= 90) return { color: "#b9d5b2 ", fontWeight: 500 }; // 90%以上（かつ99未満）
-    if (p <= 25) return { color: "#ff6347", fontWeight: 600 }; // 25%以下 -> 赤
-    if (p <= 50) return { color: "#e8d979", fontWeight: 500 }; // 50%以下 -> 黄色
-    return { color: "#cbd5e1" }; // default (slate-ish)
+    if (p == null) return { color: "#94a3b8" };
+    if (p >= 99) return { color: "#50d552", fontWeight: 600 };
+    if (p >= 90) return { color: "#b9d5b2 ", fontWeight: 500 };
+    if (p <= 25) return { color: "#ff6347", fontWeight: 600 };
+    if (p <= 50) return { color: "#e8d979", fontWeight: 500 };
+    return { color: "#cbd5e1" };
   };
 
-  // 参戦者数に対して style を返す（2人以下を #00ff00）
   const memberCountStyle = (count: number | null | undefined): React.CSSProperties => {
-    if (count == null) return { color: "#94a3b8" }; // undefined は薄め
+    if (count == null) return { color: "#94a3b8" };
     if (count <= 2) return { color: "#50d552", fontWeight: 600 };
-    return { color: "#94a3b8" }; // default
+    return { color: "#94a3b8" };
   };
 
   return (
@@ -452,13 +423,9 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
           </div>
 
           <div className="flex flex-col gap-2 sm:items-end">
-            {/* 並べて表示する行（ボス絞り込み + シリーズ絞り込み） */}
             <div className="flex items-stretch gap-2">
-              {/* マルチ絞り込み */}
               <div className="flex flex-col">
-                <label className="text-xs sm:text-sm text-slate-300 mb-1">
-                  マルチ絞り込み
-                </label>
+                <label className="text-xs sm:text-sm text-slate-300 mb-1">マルチ絞り込み</label>
                 <select
                   className="bg-slate-800 border border-slate-600 rounded px-3 text-xs sm:text-sm h-9"
                   value={bossFilter}
@@ -473,11 +440,8 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
                 </select>
               </div>
 
-              {/* シリーズ絞り込み */}
               <div className="flex flex-col">
-                <label className="text-xs sm:text-sm text-slate-300 mb-1">
-                  シリーズ絞り込み
-                </label>
+                <label className="text-xs sm:text-sm text-slate-300 mb-1">シリーズ絞り込み</label>
                 <select
                   className="bg-slate-800 border border-slate-600 rounded px-3 text-xs sm:text-sm h-9"
                   value={seriesFilter}
@@ -568,8 +532,7 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
 
               const percentRaw = raid.hp_percent;
               const percentNorm = normalizePercent(percentRaw);
-              const percentDisplay =
-                percentNorm == null ? null : `${percentNorm.toFixed(1)}%`;
+              const percentDisplay = percentNorm == null ? null : `${percentNorm.toFixed(1)}%`;
 
               const hpValueNumber = raid.hp_value != null ? raid.hp_value : null;
 
