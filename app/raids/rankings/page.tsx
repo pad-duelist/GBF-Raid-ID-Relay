@@ -1,7 +1,7 @@
 "use client";
 export const dynamic = "force-dynamic";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type Poster = {
@@ -39,13 +39,10 @@ export default function RaidRankingsPage() {
   const [groupId, setGroupId] = useState<string>("");
   const [days, setDays] = useState<number>(7);
   const [limit, setLimit] = useState<number>(10);
-  const [auto, setAuto] = useState<boolean>(true);
 
   const [data, setData] = useState<ApiResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>("");
-
-  const timerRef = useRef<number | null>(null);
 
   // URL: /raids/rankings?groupId=Apoklisi
   useEffect(() => {
@@ -92,27 +89,11 @@ export default function RaidRankingsPage() {
     }
   }, [initialized, days, limit, groupId]);
 
+  // 初回だけ自動で1回取得（不要ならこの useEffect も消せます）
   useEffect(() => {
     if (!initialized) return;
     fetchRankings();
   }, [initialized, fetchRankings]);
-
-  useEffect(() => {
-    if (!initialized) return;
-
-    if (timerRef.current) {
-      window.clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-    if (!auto) return;
-
-    timerRef.current = window.setInterval(fetchRankings, 10_000);
-
-    return () => {
-      if (timerRef.current) window.clearInterval(timerRef.current);
-      timerRef.current = null;
-    };
-  }, [initialized, auto, fetchRankings]);
 
   return (
     <div style={{ padding: 16, color: "white", maxWidth: 980, margin: "0 auto" }}>
@@ -148,7 +129,7 @@ export default function RaidRankingsPage() {
             alignItems: "center",
           }}
         >
-          {/* ✅ グループは「ラベル＋太字テキスト」（入力欄っぽさ無し / 選択不可） */}
+          {/* グループは表示専用（選択不可） */}
           <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
             <span style={{ opacity: 0.9 }}>グループ</span>
             <span
@@ -208,16 +189,6 @@ export default function RaidRankingsPage() {
             />
           </label>
 
-          <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <input
-              type="checkbox"
-              checked={auto}
-              onChange={(e) => setAuto(e.target.checked)}
-              style={{ transform: "scale(1.2)" }}
-            />
-            <span style={{ opacity: 0.95 }}>自動更新(10秒)</span>
-          </label>
-
           <button
             onClick={fetchRankings}
             style={{
@@ -231,21 +202,21 @@ export default function RaidRankingsPage() {
               whiteSpace: "nowrap",
             }}
           >
-            手動更新
+            更新
           </button>
         </div>
 
-        <div style={{ marginTop: 8, opacity: 0.85, fontSize: 12 }}>
-          {loading ? "更新中…" : data ? `生成: ${data.generated_at}` : ""}
-          {error ? ` / エラー: ${error}` : ""}
-        </div>
+        {error ? (
+          <div style={{ marginTop: 8, opacity: 0.9, fontSize: 12 }}>エラー: {error}</div>
+        ) : null}
+        {loading ? (
+          <div style={{ marginTop: 8, opacity: 0.75, fontSize: 12 }}>更新中…</div>
+        ) : null}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
         <div style={cardStyle}>
-          <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 10 }}>
-            投稿者ランキング（ユーザーID集計 / 最終使用名）
-          </div>
+          <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 10 }}>ユーザーランキング</div>
 
           {data?.posters?.length ? (
             <div style={{ display: "grid", gap: 8 }}>
@@ -280,9 +251,7 @@ export default function RaidRankingsPage() {
         </div>
 
         <div style={cardStyle}>
-          <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 10 }}>
-            人気バトルランキング（boss_name）
-          </div>
+          <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 10 }}>バトルランキング</div>
 
           {data?.battles?.length ? (
             <div style={{ display: "grid", gap: 8 }}>
