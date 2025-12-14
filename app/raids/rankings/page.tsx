@@ -31,6 +31,70 @@ const cardStyle: React.CSSProperties = {
   padding: 12,
 };
 
+// ここで「同一ユーザーとして扱うID」を定義
+const MERGE_IDS = new Set([
+  "86f9ace9-dad7-4daa-9c28-adb44759c252",
+  "8cf84c8f-2052-47fb-a3a9-cf7f2980eef4",
+]);
+
+// 代表ID（同一ユーザーとして表示する際のID）
+const CANONICAL_ID = "8cf84c8f-2052-47fb-a3a9-cf7f2980eef4";
+
+function mergePosters(posters: Poster[]): Poster[] {
+  if (!posters?.length) return posters;
+
+  const normalize = (id: string) => (MERGE_IDS.has(id) ? CANONICAL_ID : id);
+
+  // namePriority:
+  //  - 2: 代表IDの名前（最優先）
+  //  - 1: 非代表IDの名前
+  //  - 0: 空
+  const namePriority = (p: Poster) => {
+    const hasName = !!(p.user_name && p.user_name.trim());
+    if (!hasName) return 0;
+    return p.sender_user_id === CANONICAL_ID ? 2 : 1;
+  };
+
+  const map = new Map<
+    string,
+    { sender_user_id: string; user_name: string | null; post_count: number; _namePrio: number }
+  >();
+
+  for (const p of posters) {
+    const nid = normalize(p.sender_user_id);
+
+    const cur = map.get(nid);
+    if (!cur) {
+      map.set(nid, {
+        sender_user_id: nid,
+        user_name: p.user_name,
+        post_count: p.post_count,
+        _namePrio: namePriority(p),
+      });
+      continue;
+    }
+
+    // count合算
+    cur.post_count += p.post_count;
+
+    // 表示名は「代表IDの名前」優先（空なら他IDの名前）
+    const pr = namePriority(p);
+    if (pr > cur._namePrio) {
+      cur.user_name = p.user_name;
+      cur._namePrio = pr;
+    }
+
+    map.set(nid, cur);
+  }
+
+  const merged = Array.from(map.values()).map(({ _namePrio, ...rest }) => rest);
+
+  // もともとの表示と同様に post_count 降順
+  merged.sort((a, b) => b.post_count - a.post_count);
+
+  return merged;
+}
+
 export default function RaidRankingsPage() {
   const router = useRouter();
 
@@ -80,7 +144,11 @@ export default function RaidRankingsPage() {
       }
 
       const j = (await res.json()) as ApiResponse;
-      setData(j);
+
+      // ★ここで2IDを同一ユーザーとして統合
+      const mergedPosters = mergePosters(j.posters ?? []);
+
+      setData({ ...j, posters: mergedPosters });
     } catch (e: any) {
       setError(e?.message ?? String(e));
       setData(null);
@@ -89,7 +157,7 @@ export default function RaidRankingsPage() {
     }
   }, [initialized, days, limit, groupId]);
 
-  // 初回だけ自動で1回取得（不要ならこの useEffect も消せます）
+  // 初回だけ自動で1回取得
   useEffect(() => {
     if (!initialized) return;
     fetchRankings();
@@ -222,7 +290,7 @@ export default function RaidRankingsPage() {
             <div style={{ display: "grid", gap: 8 }}>
               {data.posters.map((p, i) => (
                 <div
-                  key={p.sender_user_id}
+                  key={`${p.sender_user_id}-${i}`}
                   style={{
                     display: "flex",
                     justifyContent: "space-between",
