@@ -2,20 +2,119 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
+export const dynamic = "force-dynamic";
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: { persistSession: false },
 });
+const sb: any = supabase; // ★型推論を止める（Vercelビルド安定化）
 
 // ===== 定数: 特殊ボスの判定 =====
 const ULT_BAHAMUT_NAME = "Lv200 アルティメットバハムート";
 const ULT_BAHAMUT_HP_THRESHOLD = 70000000; // 70,000,000
 
+// ===== groupId 解決（Apoklisi -> UUID） =====
+function isUuidLike(s: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    s
+  );
+}
+
+async function resolveGroupUuidCandidates(groupIdParam: string): Promise<string[]> {
+  const candidates = new Set<string>();
+
+  // 既にUUIDならそれを使う
+  if (isUuidLike(groupIdParam)) {
+    candidates.add(groupIdParam);
+    return Array.from(candidates);
+  }
+
+  // UUIDでない場合は groups テーブルから解決を試す
+  // ※ 動的カラム指定を避ける（slug/name/group_name を固定で試す）
+  try {
+    const r = await sb.from("groups").select("id").eq("slug", groupIdParam).limit(10);
+    if (!r.error && r.data?.length) {
+      for (const row of r.data) {
+        const id = String(row?.id ?? "");
+        if (id && isUuidLike(id)) candidates.add(id);
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    const r = await sb.from("groups").select("id").eq("name", groupIdParam).limit(10);
+    if (!r.error && r.data?.length) {
+      for (const row of r.data) {
+        const id = String(row?.id ?? "");
+        if (id && isUuidLike(id)) candidates.add(id);
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    const r = await sb.from("groups").select("id").eq("group_name", groupIdParam).limit(10);
+    if (!r.error && r.data?.length) {
+      for (const row of r.data) {
+        const id = String(row?.id ?? "");
+        if (id && isUuidLike(id)) candidates.add(id);
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return Array.from(candidates);
+}
+
+async function findMembershipMatchedGroupId(opts: {
+  groupIdParam: string;
+  userId: string;
+}): Promise<
+  | { ok: true; matchedGroupId: string; status: string | null }
+  | { ok: false; statusCode: number; reason: string; resolvedGroupIds?: string[] }
+> {
+  const { groupIdParam, userId } = opts;
+
+  const resolvedGroupIds = await resolveGroupUuidCandidates(groupIdParam);
+  if (resolvedGroupIds.length === 0) {
+    return { ok: false, statusCode: 404, reason: "group_not_found", resolvedGroupIds };
+  }
+
+  for (const gid of resolvedGroupIds) {
+    const { data, error } = await sb
+      .from("group_memberships")
+      .select("id,status,group_id,user_id")
+      .eq("group_id", gid)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (error) {
+      console.error("membership check error:", error);
+      return { ok: false, statusCode: 500, reason: "membership_check_failed", resolvedGroupIds };
+    }
+
+    if (!data) continue;
+
+    const status = ((data as any)?.status as string | null | undefined) ?? null;
+    if (status && ["removed", "banned", "disabled", "inactive"].includes(status)) {
+      return { ok: false, statusCode: 403, reason: "status_blocked", resolvedGroupIds };
+    }
+
+    return { ok: true, matchedGroupId: gid, status };
+  }
+
+  return { ok: false, statusCode: 403, reason: "not_member", resolvedGroupIds };
+}
+
 // ===== ボス名ブロックリスト関連 =====
 const BOSS_BLOCKLIST_CSV_URL =
-  process.env.BOSS_BLOCKLIST_CSV_URL ??
-  process.env.NEXT_PUBLIC_BOSS_BLOCKLIST_CSV_URL;
+  process.env.BOSS_BLOCKLIST_CSV_URL ?? process.env.NEXT_PUBLIC_BOSS_BLOCKLIST_CSV_URL;
 
 let bossBlockList: Set<string> | null = null;
 let lastBossBlockListFetched = 0;
@@ -83,9 +182,7 @@ const BOSS_MAP_TTL = 5 * 60 * 1000; // 5分
 
 function toHalfwidthAndLower(s: string) {
   return (s || "")
-    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (ch) =>
-      String.fromCharCode(ch.charCodeAt(0) - 0xfee0)
-    )
+    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
@@ -132,11 +229,7 @@ async function fetchBossNameMapCached(
 
     const header = lines[0]?.toLowerCase() ?? "";
     const startIndex =
-      header.includes("from") ||
-      header.includes("before") ||
-      header.includes("変換前")
-        ? 1
-        : 0;
+      header.includes("from") || header.includes("before") || header.includes("変換前") ? 1 : 0;
 
     for (let i = startIndex; i < lines.length; i++) {
       const cols = lines[i].split(",");
@@ -180,88 +273,8 @@ async function mapNormalize(name: string | null | undefined): Promise<string | n
   return raw;
 }
 
-// ===== groupId 解決（Apoklisi -> UUID） =====
-function isUuidLike(s: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s);
-}
-
-async function resolveGroupUuidCandidates(groupIdParam: string): Promise<string[]> {
-  const candidates = new Set<string>();
-
-  if (isUuidLike(groupIdParam)) {
-    candidates.add(groupIdParam);
-    return Array.from(candidates);
-  }
-
-  // UUIDではない場合は groups テーブルから解決を試す（列が無くても落とさない）
-  const tryColumn = async (col: string) => {
-    try {
-      const { data, error } = await supabase
-        .from("groups")
-        .select("id")
-        .eq(col as any, groupIdParam)
-        .limit(10);
-
-      if (!error && data?.length) {
-        for (const row of data) {
-          const id = String((row as any)?.id ?? "");
-          if (id && isUuidLike(id)) candidates.add(id);
-        }
-      }
-    } catch {
-      // groups テーブルが無い/列が無い等は無視
-    }
-  };
-
-  await tryColumn("slug");
-  await tryColumn("name");
-  await tryColumn("group_name");
-
-  return Array.from(candidates);
-}
-
-async function findMembershipMatchedGroupId(opts: {
-  groupIdParam: string;
-  userId: string;
-}): Promise<
-  | { ok: true; matchedGroupId: string; status: string | null }
-  | { ok: false; statusCode: number; reason: string; resolvedGroupIds?: string[] }
-> {
-  const { groupIdParam, userId } = opts;
-
-  const resolvedGroupIds = await resolveGroupUuidCandidates(groupIdParam);
-  if (resolvedGroupIds.length === 0) {
-    return { ok: false, statusCode: 404, reason: "group_not_found", resolvedGroupIds };
-  }
-
-  for (const gid of resolvedGroupIds) {
-    const { data, error } = await supabase
-      .from("group_memberships")
-      .select("id,status,group_id,user_id")
-      .eq("group_id", gid)
-      .eq("user_id", userId)
-      .maybeSingle();
-
-    if (error) {
-      console.error("membership check error:", error);
-      return { ok: false, statusCode: 500, reason: "membership_check_failed", resolvedGroupIds };
-    }
-
-    if (!data) continue;
-
-    const status = ((data as any)?.status as string | null | undefined) ?? null;
-    if (status && ["removed", "banned", "disabled", "inactive"].includes(status)) {
-      return { ok: false, statusCode: 403, reason: "status_blocked", resolvedGroupIds };
-    }
-
-    return { ok: true, matchedGroupId: gid, status };
-  }
-
-  return { ok: false, statusCode: 403, reason: "not_member", resolvedGroupIds };
-}
-
-// ===== 参戦者数抑制（既存のまま） =====
-function shouldSuppressByMembers(memberCurrent: any, memberMax: any): boolean {
+// ===== 参戦者数抑制（必要なら後で拡張） =====
+function shouldSuppressByMembers(_memberCurrent: any, _memberMax: any): boolean {
   return false;
 }
 
@@ -284,7 +297,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "userId is required" }, { status: 401 });
   }
 
-  // 所属チェック + matchedGroupId を確定（ここが重要）
+  // 所属チェック + matchedGroupId(UUID) を確定
   const mem = await findMembershipMatchedGroupId({
     groupIdParam,
     userId: callerUserId,
@@ -300,7 +313,7 @@ export async function GET(req: NextRequest) {
   const matchedGroupId = mem.matchedGroupId;
 
   try {
-    let query = supabase
+    let query = sb
       .from("raids")
       .select(
         [
@@ -324,9 +337,11 @@ export async function GET(req: NextRequest) {
 
     if (bossNameParam) {
       const normalizedBossNameParam = await mapNormalize(bossNameParam);
-      query = query.or(
-        `boss_name.eq.${normalizedBossNameParam},battle_name.eq.${normalizedBossNameParam}`
-      );
+      if (normalizedBossNameParam) {
+        query = query.or(
+          `boss_name.eq.${normalizedBossNameParam},battle_name.eq.${normalizedBossNameParam}`
+        );
+      }
     }
 
     if (excludeUserId) {
@@ -386,7 +401,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "senderUserId is required" }, { status: 401 });
     }
 
-    // 所属チェック + matchedGroupId を確定
+    // 所属チェック + matchedGroupId(UUID) を確定
     const mem = await findMembershipMatchedGroupId({
       groupIdParam,
       userId: senderUserId,
@@ -435,7 +450,7 @@ export async function POST(req: NextRequest) {
     }
 
     // INSERT（group_id は matchedGroupId(UUID) を入れる）
-    const { error } = await supabase.from("raids").insert([
+    const { error } = await sb.from("raids").insert([
       {
         group_id: matchedGroupId,
         raid_id: raidId,
