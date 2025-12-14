@@ -34,6 +34,82 @@ const COPIED_IDS_KEY = "gbf-copied-raid-ids";
 export default function GroupPageClient({ groupId }: { groupId: string }) {
   const router = useRouter();
 
+  // ===== アクセス制御（グループ所属チェック） =====
+  const [accessOk, setAccessOk] = useState(false);
+  const [accessChecking, setAccessChecking] = useState(true);
+  const [accessErrorText, setAccessErrorText] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      if (typeof window === "undefined") return;
+
+      setAccessChecking(true);
+      setAccessErrorText(null);
+      setAccessOk(false);
+
+      const userId = window.localStorage.getItem("extensionUserId");
+      if (!userId || userId.trim().length === 0) {
+        setAccessErrorText("ユーザーIDが未設定です。extension-token ページへ移動します…");
+        router.replace("/extension-token");
+        return;
+      }
+
+      try {
+        const res = await fetch(
+          `/api/group-access?groupId=${encodeURIComponent(groupId)}&userId=${encodeURIComponent(
+            userId.trim()
+          )}`,
+          { cache: "no-store" }
+        );
+
+        if (!res.ok) {
+          setAccessErrorText("グループ権限の確認に失敗しました。extension-token ページへ移動します…");
+          router.replace("/extension-token");
+          return;
+        }
+
+        const json = await res.json();
+        if (!json?.allowed) {
+          setAccessErrorText("このグループへのアクセス権限がありません。extension-token ページへ移動します…");
+          router.replace("/extension-token");
+          return;
+        }
+
+        if (!cancelled) {
+          setAccessOk(true);
+        }
+      } catch (e) {
+        console.error("group access check failed", e);
+        setAccessErrorText("グループ権限の確認中にエラーが発生しました。extension-token ページへ移動します…");
+        router.replace("/extension-token");
+        return;
+      } finally {
+        if (!cancelled) setAccessChecking(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [groupId, router]);
+
+  // 権限確認が終わるまで表示しない（チラ見え防止）
+  if (!accessOk) {
+    return (
+      <div className="min-h-screen bg-slate-900 text-slate-50 p-4">
+        <div className="max-w-3xl mx-auto space-y-2">
+          <div className="text-lg font-bold">GBF Raid ID Relay</div>
+          <div className="text-sm text-slate-300">グループ: {groupId}</div>
+          <div className="text-sm">{accessChecking ? "権限確認中..." : "アクセス不可"}</div>
+          {accessErrorText && <div className="text-xs text-slate-400">{accessErrorText}</div>}
+        </div>
+      </div>
+    );
+  }
+
+  // ===== ここから既存ロジック =====
   const [raids, setRaids] = useState<RaidRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [bossFilter, setBossFilter] = useState<string>("");
@@ -160,14 +236,16 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
     }
   };
 
-  // groupId やマッピングが変わったら再取得
+  // groupId やマッピングが変わったら再取得（権限OKの時だけ）
   useEffect(() => {
+    if (!accessOk) return;
+
     setLoading(true);
     fetchRaids();
     const timer = setInterval(fetchRaids, 1000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupId, battleMappingMap]);
+  }, [accessOk, groupId, battleMappingMap]);
 
   async function copyId(text: string, internalId?: string) {
     try {
