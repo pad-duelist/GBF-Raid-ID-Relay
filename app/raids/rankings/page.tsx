@@ -1,8 +1,7 @@
 "use client";
 export const dynamic = "force-dynamic";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 
 type Poster = {
   sender_user_id: string;
@@ -32,14 +31,9 @@ const cardStyle: React.CSSProperties = {
 };
 
 export default function RaidRankingsPage() {
-  const sp = useSearchParams();
+  const [initialized, setInitialized] = useState(false);
 
-  // 現行URL互換：?groupId= を最優先で拾う
-  const initialGroupId = useMemo(() => {
-    return (sp.get("groupId") ?? sp.get("group") ?? "").trim();
-  }, [sp]);
-
-  const [groupId, setGroupId] = useState<string>(initialGroupId);
+  const [groupId, setGroupId] = useState<string>("");
   const [days, setDays] = useState<number>(7);
   const [limit, setLimit] = useState<number>(10);
   const [auto, setAuto] = useState<boolean>(true);
@@ -50,14 +44,24 @@ export default function RaidRankingsPage() {
 
   const timerRef = useRef<number | null>(null);
 
+  // ★ useSearchParams を使わず、クライアントでURLから読む（静的生成でもOK）
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search);
+    const g = (sp.get("groupId") ?? sp.get("group") ?? "").trim();
+    setGroupId(g);
+    setInitialized(true);
+  }, []);
+
   const fetchRankings = useCallback(async () => {
+    if (!initialized) return;
+
     setLoading(true);
     setError("");
     try {
       const qs = new URLSearchParams();
       qs.set("days", String(days));
       qs.set("limit", String(limit));
-      if (groupId.trim()) qs.set("groupId", groupId.trim()); // ★ここ重要（URL互換）
+      if (groupId.trim()) qs.set("groupId", groupId.trim()); // ★現行URL互換
 
       const res = await fetch(`/api/rankings?${qs.toString()}`, { cache: "no-store" });
       if (!res.ok) {
@@ -73,13 +77,16 @@ export default function RaidRankingsPage() {
     } finally {
       setLoading(false);
     }
-  }, [days, limit, groupId]);
+  }, [initialized, days, limit, groupId]);
 
   useEffect(() => {
+    if (!initialized) return;
     fetchRankings();
-  }, [fetchRankings]);
+  }, [initialized, fetchRankings]);
 
   useEffect(() => {
+    if (!initialized) return;
+
     if (timerRef.current) {
       window.clearInterval(timerRef.current);
       timerRef.current = null;
@@ -94,7 +101,7 @@ export default function RaidRankingsPage() {
       if (timerRef.current) window.clearInterval(timerRef.current);
       timerRef.current = null;
     };
-  }, [auto, fetchRankings]);
+  }, [initialized, auto, fetchRankings]);
 
   return (
     <div style={{ padding: 16, color: "white", maxWidth: 980, margin: "0 auto" }}>
