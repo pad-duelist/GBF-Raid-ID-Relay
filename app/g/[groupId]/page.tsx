@@ -355,9 +355,9 @@ export default function GroupPage() {
     if (p == null) return { color: "#94a3b8" }; // slate-400
     // 優先度に注意：上から判定
     if (p >= 99) return { color: "#bbff77", fontWeight: 600 }; // 99%以上
-    if (p >= 90) return { color: "#bbff77", fontWeight: 500 }; // 90%以上（かつ99未満）
+    if (p >= 90) return { color: "#b9d5b2 ", fontWeight: 500 }; // 90%以上（かつ99未満）
     if (p <= 25) return { color: "#ff6347", fontWeight: 600 }; // 25%以下 -> 赤
-    if (p <= 50) return { color: "#ffff00", fontWeight: 500 }; // 50%以下 -> 黄色
+    if (p <= 50) return { color: "#e8d979", fontWeight: 500 }; // 50%以下 -> 黄色
     return { color: "#cbd5e1" }; // default (slate-ish)
   };
 
