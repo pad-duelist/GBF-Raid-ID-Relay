@@ -48,8 +48,6 @@ async function loadBossBlockList(): Promise<Set<string>> {
       .map((l) => l.trim())
       .filter(Boolean);
 
-    // 1列目だけ使う想定（ヘッダーがあるなら自動で外れるように工夫）
-    // 「boss_name」等のヘッダーが来たら捨てる
     const set = new Set<string>();
     for (const line of lines) {
       const first = line.split(",")[0]?.trim();
@@ -75,7 +73,7 @@ async function isBossBlocked(name: string | null | undefined): Promise<boolean> 
   return set.has(normalizeBossName(name));
 }
 
-// ===== ボス名 CSV マッピング関連（battle_name_map と同様の作り） =====
+// ===== ボス名 CSV マッピング関連 =====
 const BOSS_MAP_CSV_URL =
   process.env.BOSS_NAME_MAP_CSV_URL ?? process.env.NEXT_PUBLIC_BOSS_NAME_MAP_CSV_URL;
 
@@ -94,7 +92,6 @@ function toHalfwidthAndLower(s: string) {
 }
 
 function removeCommonNoise(s: string) {
-  // 「Lv」「level」「レベル」等や不要な記号をある程度落とす（必要に応じて拡張）
   return (s || "")
     .replace(/[\[\]【】()（）]/g, " ")
     .replace(/[・]/g, " ")
@@ -106,7 +103,6 @@ function normalizeKey(raw: string) {
   return removeCommonNoise(toHalfwidthAndLower(raw || ""));
 }
 
-// --- CSV から作られた map を取得（キャッシュ付き） ---
 async function fetchBossNameMapCached(
   force = false
 ): Promise<{ map: Record<string, string>; sortedKeys: string[] }> {
@@ -134,12 +130,13 @@ async function fetchBossNameMapCached(
 
     const map: Record<string, string> = {};
 
-    // 1行目がヘッダーっぽい場合をスキップ（"from,to" / "before,after" 等）
-    const startIndex = lines[0]?.toLowerCase().includes("from") ||
-      lines[0]?.toLowerCase().includes("before") ||
-      lines[0]?.toLowerCase().includes("変換前")
-      ? 1
-      : 0;
+    const header = lines[0]?.toLowerCase() ?? "";
+    const startIndex =
+      header.includes("from") ||
+      header.includes("before") ||
+      header.includes("変換前")
+        ? 1
+        : 0;
 
     for (let i = startIndex; i < lines.length; i++) {
       const cols = lines[i].split(",");
@@ -149,7 +146,6 @@ async function fetchBossNameMapCached(
       map[normalizeKey(from)] = to;
     }
 
-    // 長いキーから先にマッチさせたいので length desc でソート
     const sortedKeys = Object.keys(map).sort((a, b) => b.length - a.length);
 
     bossMapCache = { map, sortedKeys };
@@ -163,7 +159,6 @@ async function fetchBossNameMapCached(
   }
 }
 
-// --- 文字列に対して map を適用して「統一名」にする ---
 async function mapNormalize(name: string | null | undefined): Promise<string | null> {
   if (!name) return null;
 
@@ -175,10 +170,8 @@ async function mapNormalize(name: string | null | undefined): Promise<string | n
 
   const key = normalizeKey(raw);
 
-  // 完全一致
   if (map[key]) return map[key];
 
-  // 部分一致（長いキー優先）
   for (const k of sortedKeys) {
     if (!k) continue;
     if (key.includes(k)) return map[k];
@@ -187,9 +180,88 @@ async function mapNormalize(name: string | null | undefined): Promise<string | n
   return raw;
 }
 
-// ===== 参戦者数抑制（必要に応じて運用） =====
+// ===== groupId 解決（Apoklisi -> UUID） =====
+function isUuidLike(s: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s);
+}
+
+async function resolveGroupUuidCandidates(groupIdParam: string): Promise<string[]> {
+  const candidates = new Set<string>();
+
+  if (isUuidLike(groupIdParam)) {
+    candidates.add(groupIdParam);
+    return Array.from(candidates);
+  }
+
+  // UUIDではない場合は groups テーブルから解決を試す（列が無くても落とさない）
+  const tryColumn = async (col: string) => {
+    try {
+      const { data, error } = await supabase
+        .from("groups")
+        .select("id")
+        .eq(col as any, groupIdParam)
+        .limit(10);
+
+      if (!error && data?.length) {
+        for (const row of data) {
+          const id = String((row as any)?.id ?? "");
+          if (id && isUuidLike(id)) candidates.add(id);
+        }
+      }
+    } catch {
+      // groups テーブルが無い/列が無い等は無視
+    }
+  };
+
+  await tryColumn("slug");
+  await tryColumn("name");
+  await tryColumn("group_name");
+
+  return Array.from(candidates);
+}
+
+async function findMembershipMatchedGroupId(opts: {
+  groupIdParam: string;
+  userId: string;
+}): Promise<
+  | { ok: true; matchedGroupId: string; status: string | null }
+  | { ok: false; statusCode: number; reason: string; resolvedGroupIds?: string[] }
+> {
+  const { groupIdParam, userId } = opts;
+
+  const resolvedGroupIds = await resolveGroupUuidCandidates(groupIdParam);
+  if (resolvedGroupIds.length === 0) {
+    return { ok: false, statusCode: 404, reason: "group_not_found", resolvedGroupIds };
+  }
+
+  for (const gid of resolvedGroupIds) {
+    const { data, error } = await supabase
+      .from("group_memberships")
+      .select("id,status,group_id,user_id")
+      .eq("group_id", gid)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (error) {
+      console.error("membership check error:", error);
+      return { ok: false, statusCode: 500, reason: "membership_check_failed", resolvedGroupIds };
+    }
+
+    if (!data) continue;
+
+    const status = ((data as any)?.status as string | null | undefined) ?? null;
+    if (status && ["removed", "banned", "disabled", "inactive"].includes(status)) {
+      return { ok: false, statusCode: 403, reason: "status_blocked", resolvedGroupIds };
+    }
+
+    return { ok: true, matchedGroupId: gid, status };
+  }
+
+  return { ok: false, statusCode: 403, reason: "not_member", resolvedGroupIds };
+}
+
+// ===== 参戦者数抑制（既存のまま） =====
 function shouldSuppressByMembers(memberCurrent: any, memberMax: any): boolean {
-  // ここは既存仕様のまま（必要なら調整）
   return false;
 }
 
@@ -197,45 +269,35 @@ function shouldSuppressByMembers(memberCurrent: any, memberMax: any): boolean {
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
 
-  const groupId = searchParams.get("groupId");
+  const groupIdParam = searchParams.get("groupId");
   const bossNameParam = searchParams.get("bossName");
   const limitParam = searchParams.get("limit");
   const excludeUserId = searchParams.get("excludeUserId");
 
-  if (!groupId) {
+  if (!groupIdParam) {
     return NextResponse.json({ error: "groupId is required" }, { status: 400 });
   }
 
-  // ===== アクセス制御: グループ所属チェック（member以外は403）=====
-  // NOTE: 現状のフロントは localStorage の extensionUserId を excludeUserId として送っているため、
-  // まずは excludeUserId を「呼び出し元ユーザーID」として扱います。
-  // （将来的には token->user_id のサーバー側検証へ移行推奨）
+  // 呼び出し元ユーザーID（現状フロントが excludeUserId を送っている前提）
   const callerUserId = searchParams.get("userId") || excludeUserId;
-
   if (!callerUserId) {
     return NextResponse.json({ error: "userId is required" }, { status: 401 });
   }
 
-  const { data: membership, error: membershipError } = await supabase
-    .from("group_memberships")
-    .select("id,status")
-    .eq("group_id", groupId)
-    .eq("user_id", callerUserId)
-    .maybeSingle();
+  // 所属チェック + matchedGroupId を確定（ここが重要）
+  const mem = await findMembershipMatchedGroupId({
+    groupIdParam,
+    userId: callerUserId,
+  });
 
-  if (membershipError) {
-    console.error("[GET /api/raids] membership check error", membershipError);
-    return NextResponse.json({ error: "membership check failed" }, { status: 500 });
+  if (!mem.ok) {
+    return NextResponse.json(
+      { error: mem.reason, resolvedGroupIds: mem.resolvedGroupIds ?? undefined },
+      { status: mem.statusCode }
+    );
   }
 
-  if (!membership) {
-    return NextResponse.json({ error: "forbidden" }, { status: 403 });
-  }
-
-  const status = (membership as any)?.status as string | null | undefined;
-  if (status && ["removed", "banned", "disabled", "inactive"].includes(status)) {
-    return NextResponse.json({ error: "forbidden" }, { status: 403 });
-  }
+  const matchedGroupId = mem.matchedGroupId;
 
   try {
     let query = supabase
@@ -256,11 +318,10 @@ export async function GET(req: NextRequest) {
           "sender_user_id",
         ].join(",")
       )
-      .eq("group_id", groupId)
+      .eq("group_id", matchedGroupId)
       .order("created_at", { ascending: false })
       .limit(isNaN(Number(limitParam)) ? 50 : Number(limitParam));
 
-    // bossName が指定された場合は mapNormalize を使って統一名に変換して検索する
     if (bossNameParam) {
       const normalizedBossNameParam = await mapNormalize(bossNameParam);
       query = query.or(
@@ -268,7 +329,6 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // 自分の投稿を除外
     if (excludeUserId) {
       query = query.not("sender_user_id", "eq", excludeUserId);
     }
@@ -299,13 +359,10 @@ export async function POST(req: NextRequest) {
       const formData = await req.formData();
       body = Object.fromEntries(formData.entries());
     } else {
-      return NextResponse.json(
-        { error: "Unsupported content type" },
-        { status: 415 }
-      );
+      return NextResponse.json({ error: "Unsupported content type" }, { status: 415 });
     }
 
-    const groupId = body.groupId ?? body.group_id;
+    const groupIdParam = body.groupId ?? body.group_id;
     const raidId = body.raidId ?? body.raid_id;
 
     let bossName = body.bossName ?? body.boss_name;
@@ -320,41 +377,31 @@ export async function POST(req: NextRequest) {
     const memberCurrent = body.memberCurrent ?? body.member_current;
     const memberMax = body.memberMax ?? body.member_max;
 
-    if (!groupId || !raidId) {
-      return NextResponse.json(
-        { error: "groupId and raidId are required" },
-        { status: 400 }
-      );
+    if (!groupIdParam || !raidId) {
+      return NextResponse.json({ error: "groupId and raidId are required" }, { status: 400 });
     }
 
-    // ===== アクセス制御: 投稿者がグループ所属しているかチェック =====
-    // senderUserId が無い投稿は拒否（グループ外からのPOSTを防ぐため）
+    // senderUserId が無い投稿は拒否（グループ外からのPOSTを防ぐ）
     if (!senderUserId) {
       return NextResponse.json({ error: "senderUserId is required" }, { status: 401 });
     }
 
-    const { data: membership, error: membershipError } = await supabase
-      .from("group_memberships")
-      .select("id,status")
-      .eq("group_id", groupId)
-      .eq("user_id", senderUserId)
-      .maybeSingle();
+    // 所属チェック + matchedGroupId を確定
+    const mem = await findMembershipMatchedGroupId({
+      groupIdParam,
+      userId: senderUserId,
+    });
 
-    if (membershipError) {
-      console.error("[POST /api/raids] membership check error", membershipError);
-      return NextResponse.json({ error: "membership check failed" }, { status: 500 });
+    if (!mem.ok) {
+      return NextResponse.json(
+        { error: mem.reason, resolvedGroupIds: mem.resolvedGroupIds ?? undefined },
+        { status: mem.statusCode }
+      );
     }
 
-    if (!membership) {
-      return NextResponse.json({ error: "forbidden" }, { status: 403 });
-    }
+    const matchedGroupId = mem.matchedGroupId;
 
-    const status = (membership as any)?.status as string | null | undefined;
-    if (status && ["removed", "banned", "disabled", "inactive"].includes(status)) {
-      return NextResponse.json({ error: "forbidden" }, { status: 403 });
-    }
-
-    // ===== ここで bossName / battleName を統一名に変換してから扱う =====
+    // bossName / battleName を統一名に変換
     try {
       bossName = (await mapNormalize(bossName)) || (bossName ?? null);
       battleName = (await mapNormalize(battleName)) || (battleName ?? null);
@@ -364,37 +411,19 @@ export async function POST(req: NextRequest) {
       battleName = battleName ?? null;
     }
 
-    // ===== ブロックリスト判定（boss_name/battle_name の両方をチェック）=====
+    // ブロックリスト判定
     const bossBlocked = await isBossBlocked(bossName);
     const battleBlocked = await isBossBlocked(battleName);
-
     if (bossBlocked || battleBlocked) {
-      console.log(
-        "[POST /api/raids] blocked by boss blocklist, skip insert:",
-        groupId,
-        raidId,
-        bossName,
-        battleName
-      );
       return NextResponse.json({ ok: true, blocked: true }, { status: 200 });
     }
 
-    // ===== 参戦者数ルールで抑制する場合は早期終了 =====
+    // 参戦者数抑制
     if (shouldSuppressByMembers(memberCurrent, memberMax)) {
-      console.log(
-        "[POST /api/raids] suppressed by member counts, skip insert",
-        {
-          groupId,
-          raidId,
-          member_current: memberCurrent,
-          member_max: memberMax,
-        }
-      );
       return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
     }
 
-    // ===== アルバハ200（例）特殊抑制（既存仕様のまま）=====
-    // bossName がアルバハ200で hpValue が 7000万より大きい場合は抑制
+    // アルバハ200（既存仕様）
     const hpValueNum = hpValue == null ? null : Number(hpValue);
     if (
       bossName === ULT_BAHAMUT_NAME &&
@@ -402,17 +431,13 @@ export async function POST(req: NextRequest) {
       !Number.isNaN(hpValueNum) &&
       hpValueNum > ULT_BAHAMUT_HP_THRESHOLD
     ) {
-      console.log(
-        "[POST /api/raids] suppressed by ULT_BAHAMUT hp threshold",
-        { groupId, raidId, hpValue: hpValueNum }
-      );
       return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
     }
 
-    // ===== INSERT =====
+    // INSERT（group_id は matchedGroupId(UUID) を入れる）
     const { error } = await supabase.from("raids").insert([
       {
-        group_id: groupId,
+        group_id: matchedGroupId,
         raid_id: raidId,
         boss_name: bossName ?? null,
         battle_name: battleName ?? null,

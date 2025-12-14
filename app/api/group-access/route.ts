@@ -15,67 +15,73 @@ function isUuidLike(s: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s);
 }
 
-/**
- * groupId(=URL) が以下どれでも membership を確認できるようにする:
- * - そのまま group_memberships.group_id と一致
- * - groups テーブルがある場合: groups.id / groups.slug / groups.name から解決
- *
- * ※ groups テーブルや slug/name が無い環境でも「エラーで落ちない」ようにしてあります
- */
-async function resolveGroupIdCandidates(groupId: string): Promise<string[]> {
+// groups テーブルの「あり得る列名」で UUID を引けるだけ引く（列が無くても落とさない）
+async function resolveGroupUuidCandidates(groupIdParam: string) {
   const candidates = new Set<string>();
-  candidates.add(groupId);
 
-  // UUIDならそれ以上探さなくてもよいケースが多い（ただし一応 candidates は返す）
-  // name/slug で来る可能性が高いので、UUIDでない場合は groups を見に行く
-  if (!isUuidLike(groupId)) {
-    // groups テーブルが存在する場合だけ解決する（無い場合はエラーになるので握りつぶす）
+  // すでにUUIDならそれを使う
+  if (isUuidLike(groupIdParam)) {
+    candidates.add(groupIdParam);
+    return Array.from(candidates);
+  }
+
+  // UUIDではない場合は groups テーブルから解決を試みる
+  // ※列が無いとSupabaseがエラーを返すので、その場合は握りつぶして次を試す
+  const tryColumn = async (col: string) => {
     try {
-      // まず slug で探す
-      let r1 = await supabase
+      const { data, error } = await supabase
         .from("groups")
         .select("id")
-        .eq("slug", groupId)
-        .limit(5);
+        .eq(col as any, groupIdParam)
+        .limit(10);
 
-      if (!r1.error && r1.data?.length) {
-        for (const row of r1.data) candidates.add(row.id);
-      }
-
-      // 次に name で探す
-      let r2 = await supabase
-        .from("groups")
-        .select("id")
-        .eq("name", groupId)
-        .limit(5);
-
-      if (!r2.error && r2.data?.length) {
-        for (const row of r2.data) candidates.add(row.id);
+      if (!error && data?.length) {
+        for (const row of data) {
+          if (row?.id && isUuidLike(String(row.id))) candidates.add(String(row.id));
+        }
       }
     } catch {
-      // groups テーブルが無い等は無視
+      // groups テーブルが無い等も含めて無視
     }
-  }
+  };
+
+  // よくある列名を順に試す（あなたのスキーマに合わせて増やしてOK）
+  await tryColumn("slug");
+  await tryColumn("name");
+  await tryColumn("group_name");
 
   return Array.from(candidates);
 }
 
 export async function GET(req: NextRequest) {
-  const groupId = req.nextUrl.searchParams.get("groupId") ?? "";
+  const groupIdParam = req.nextUrl.searchParams.get("groupId") ?? "";
   const userId = req.nextUrl.searchParams.get("userId") ?? "";
   const debug = req.nextUrl.searchParams.get("debug") === "1";
 
-  if (!groupId || !userId) {
+  if (!groupIdParam || !userId) {
     return NextResponse.json(
       { allowed: false, reason: "missing_params" },
       { status: 400 }
     );
   }
 
-  const groupIds = await resolveGroupIdCandidates(groupId);
+  // ここで UUID 候補に解決（UUID以外は group_memberships に投げない！）
+  const groupIds = await resolveGroupUuidCandidates(groupIdParam);
 
-  // candidates のどれかに所属していればOK
+  if (groupIds.length === 0) {
+    return NextResponse.json(
+      {
+        allowed: false,
+        reason: "group_not_found",
+        ...(debug ? { debug: { groupIdParam, userId, resolvedGroupIds: groupIds } } : {}),
+      },
+      { status: 404 }
+    );
+  }
+
+  // どれか1つでも所属していれば OK
   for (const gid of groupIds) {
+    // gid は UUID のみ
     const { data, error } = await supabase
       .from("group_memberships")
       .select("id,status,group_id,user_id")
@@ -88,7 +94,7 @@ export async function GET(req: NextRequest) {
         {
           allowed: false,
           reason: "db_error",
-          ...(debug ? { debug: { groupId, userId, groupIds, error } } : {}),
+          ...(debug ? { debug: { groupIdParam, userId, resolvedGroupIds: groupIds, error } } : {}),
         },
         { status: 500 }
       );
@@ -102,7 +108,7 @@ export async function GET(req: NextRequest) {
         {
           allowed: false,
           reason: "status_blocked",
-          ...(debug ? { debug: { groupId, userId, groupIds, matchedGroupId: gid, status } } : {}),
+          ...(debug ? { debug: { groupIdParam, userId, resolvedGroupIds: groupIds, matchedGroupId: gid, status } } : {}),
         },
         { status: 403 }
       );
@@ -111,7 +117,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(
       {
         allowed: true,
-        ...(debug ? { debug: { groupId, userId, groupIds, matchedGroupId: gid, status: status ?? null } } : {}),
+        ...(debug ? { debug: { groupIdParam, userId, resolvedGroupIds: groupIds, matchedGroupId: gid, status: status ?? null } } : {}),
       },
       { status: 200 }
     );
@@ -121,7 +127,7 @@ export async function GET(req: NextRequest) {
     {
       allowed: false,
       reason: "not_member",
-      ...(debug ? { debug: { groupId, userId, groupIds } } : {}),
+      ...(debug ? { debug: { groupIdParam, userId, resolvedGroupIds: groupIds } } : {}),
     },
     { status: 403 }
   );
