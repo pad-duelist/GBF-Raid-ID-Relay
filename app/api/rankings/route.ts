@@ -1,4 +1,3 @@
-// app/api/rankings/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
@@ -23,6 +22,8 @@ export async function GET(req: NextRequest) {
 
     const days = toInt(searchParams.get("days"), 7, 1, 60);
     const limit = toInt(searchParams.get("limit"), 10, 1, 100);
+
+    // 現行URL互換: groupId 最優先
     const groupParam = (searchParams.get("groupId") ?? searchParams.get("group") ?? "").trim();
 
     const { data: posters, error: e1 } = await supabase.rpc("get_poster_rankings", {

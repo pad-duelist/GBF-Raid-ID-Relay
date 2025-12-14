@@ -44,7 +44,7 @@ export default function RaidRankingsPage() {
 
   const timerRef = useRef<number | null>(null);
 
-  // ★ useSearchParams を使わず、クライアントでURLから読む（静的生成でもOK）
+  // URLは維持: /raids/rankings?groupId=Apoklisi
   useEffect(() => {
     const sp = new URLSearchParams(window.location.search);
     const g = (sp.get("groupId") ?? sp.get("group") ?? "").trim();
@@ -61,7 +61,10 @@ export default function RaidRankingsPage() {
       const qs = new URLSearchParams();
       qs.set("days", String(days));
       qs.set("limit", String(limit));
-      if (groupId.trim()) qs.set("groupId", groupId.trim()); // ★現行URL互換
+      if (groupId.trim()) qs.set("groupId", groupId.trim());
+
+      // キャッシュ回避ダミー（必要なら有効に）
+      qs.set("_t", String(Date.now()));
 
       const res = await fetch(`/api/rankings?${qs.toString()}`, { cache: "no-store" });
       if (!res.ok) {
@@ -93,9 +96,7 @@ export default function RaidRankingsPage() {
     }
     if (!auto) return;
 
-    timerRef.current = window.setInterval(() => {
-      fetchRankings();
-    }, 10_000);
+    timerRef.current = window.setInterval(fetchRankings, 10_000);
 
     return () => {
       if (timerRef.current) window.clearInterval(timerRef.current);
@@ -114,7 +115,7 @@ export default function RaidRankingsPage() {
             <input
               value={groupId}
               onChange={(e) => setGroupId(e.target.value)}
-              placeholder="group_id(UUID) または group_name"
+              placeholder="group_name または group_id(UUID)"
               style={{
                 width: 320,
                 padding: "8px 10px",
@@ -237,7 +238,9 @@ export default function RaidRankingsPage() {
         </div>
 
         <div style={cardStyle}>
-          <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 10 }}>人気バトルランキング</div>
+          <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 10 }}>
+            人気バトルランキング（boss_name）
+          </div>
 
           {data?.battles?.length ? (
             <div style={{ display: "grid", gap: 8 }}>
