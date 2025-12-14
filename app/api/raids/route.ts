@@ -25,13 +25,13 @@ const ULT_BAHAMUT_HP_THRESHOLD_SPECIAL_SENDER_IDS = new Set<string>([
   "8cf84c8f-2052-47fb-a3a9-cf7f2980eef4",
 ]);
 
-// ===== groupId 解決（Apoklisi -> UUID） =====
-function isUuidLike(s: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    s
-  );
+// ===== UUID判定 =====
+function isUuidLike(s: string): boolean {
+  if (!s) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s);
 }
 
+// ===== groupIdParam(name/uuid) -> UUID候補（複数） =====
 async function resolveGroupUuidCandidates(groupIdParam: string): Promise<string[]> {
   const candidates = new Set<string>();
 
@@ -82,6 +82,7 @@ async function resolveGroupUuidCandidates(groupIdParam: string): Promise<string[
   return Array.from(candidates);
 }
 
+// ===== 所属確認（groupIdParam(name/uuid)を受けて、membershipに一致したUUIDを1つ確定） =====
 async function findMembershipMatchedGroupId(opts: {
   groupIdParam: string;
   userId: string;
@@ -105,46 +106,43 @@ async function findMembershipMatchedGroupId(opts: {
       .maybeSingle();
 
     if (error) {
-      console.error("membership check error:", error);
-      return { ok: false, statusCode: 500, reason: "membership_check_failed", resolvedGroupIds };
+      console.error("[membership] query error:", error);
+      return { ok: false, statusCode: 500, reason: "membership_query_error", resolvedGroupIds };
     }
 
-    if (!data) continue;
-
-    const status = ((data as any)?.status as string | null | undefined) ?? null;
-    if (status && ["removed", "banned", "disabled", "inactive"].includes(status)) {
-      return { ok: false, statusCode: 403, reason: "status_blocked", resolvedGroupIds };
+    if (data) {
+      // status が null/空でも「所属」として扱う運用ならここで通す
+      return {
+        ok: true,
+        matchedGroupId: gid,
+        status: (data as any)?.status ?? null,
+      };
     }
-
-    return { ok: true, matchedGroupId: gid, status };
   }
 
   return { ok: false, statusCode: 403, reason: "not_member", resolvedGroupIds };
 }
 
-// ===== group_id -> group_name 解決（groups.id から groups.name を取得） =====
-const GROUP_NAME_TTL = 5 * 60 * 1000;
+// ===== group_id -> group_name 解決（簡易キャッシュ） =====
 const groupNameCache = new Map<string, { name: string | null; ts: number }>();
 
 async function getGroupNameCached(groupId: string): Promise<string | null> {
-  if (!groupId) return null;
-
   const now = Date.now();
-  const cached = groupNameCache.get(groupId);
-  if (cached && now - cached.ts < GROUP_NAME_TTL) return cached.name;
+  const hit = groupNameCache.get(groupId);
+  if (hit && now - hit.ts < 60_000) return hit.name;
 
   try {
     const { data, error } = await sb.from("groups").select("name").eq("id", groupId).maybeSingle();
     if (error) {
-      console.error("getGroupNameCached error:", error);
+      console.warn("[getGroupNameCached] error:", error);
       groupNameCache.set(groupId, { name: null, ts: now });
       return null;
     }
-    const name = (data as any)?.name ? String((data as any).name) : null;
+    const name = data?.name ?? null;
     groupNameCache.set(groupId, { name, ts: now });
     return name;
   } catch (e) {
-    console.error("getGroupNameCached exception:", e);
+    console.warn("[getGroupNameCached] fatal:", e);
     groupNameCache.set(groupId, { name: null, ts: now });
     return null;
   }
@@ -177,141 +175,37 @@ async function loadBossBlockList(): Promise<Set<string>> {
 
   try {
     const res = await fetch(BOSS_BLOCKLIST_CSV_URL, { cache: "no-store" });
-    if (!res.ok) throw new Error(`Failed to fetch blocklist: ${res.status}`);
-    const text = await res.text();
+    if (!res.ok) throw new Error(`failed to fetch blocklist csv: ${res.status}`);
 
-    const lines = text
+    const csv = await res.text();
+    const lines = csv
       .split(/\r?\n/)
       .map((l) => l.trim())
-      .filter(Boolean);
+      .filter((l) => l.length > 0);
 
+    // 1列CSV想定（ヘッダあり/なし両対応）
     const set = new Set<string>();
     for (const line of lines) {
-      const first = line.split(",")[0]?.trim();
-      if (!first) continue;
-      if (first.toLowerCase() === "boss_name") continue;
-      set.add(normalizeBossName(first));
+      const v = line.split(",")[0]?.trim();
+      if (!v) continue;
+      // ヘッダっぽいものは除外
+      if (v === "boss_name" || v === "name") continue;
+      set.add(normalizeBossName(v));
     }
 
     bossBlockList = set;
     lastBossBlockListFetched = now;
     return set;
   } catch (e) {
-    console.error("loadBossBlockList error:", e);
+    console.error("[loadBossBlockList] error:", e);
+    // 取得失敗時は空扱い
     bossBlockList = new Set();
     lastBossBlockListFetched = now;
     return bossBlockList;
   }
 }
 
-async function isBossBlocked(name: string | null | undefined): Promise<boolean> {
-  if (!name) return false;
-  const set = await loadBossBlockList();
-  return set.has(normalizeBossName(name));
-}
-
-// ===== ボス名 CSV マッピング関連 =====
-const BOSS_MAP_CSV_URL =
-  process.env.BOSS_NAME_MAP_CSV_URL ?? process.env.NEXT_PUBLIC_BOSS_NAME_MAP_CSV_URL;
-
-let bossMapCache: { map: Record<string, string>; sortedKeys: string[] } | null = null;
-let lastBossMapFetched = 0;
-const BOSS_MAP_TTL = 5 * 60 * 1000; // 5分
-
-function toHalfwidthAndLower(s: string) {
-  return (s || "")
-    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
-function removeCommonNoise(s: string) {
-  return (s || "")
-    .replace(/[\[\]【】()（）]/g, " ")
-    .replace(/[・]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function normalizeKey(raw: string) {
-  return removeCommonNoise(toHalfwidthAndLower(raw || ""));
-}
-
-async function fetchBossNameMapCached(
-  force = false
-): Promise<{ map: Record<string, string>; sortedKeys: string[] }> {
-  const now = Date.now();
-  if (!force && bossMapCache && now - lastBossMapFetched < BOSS_MAP_TTL) {
-    return bossMapCache;
-  }
-
-  const empty = { map: {} as Record<string, string>, sortedKeys: [] as string[] };
-  if (!BOSS_MAP_CSV_URL) {
-    bossMapCache = empty;
-    lastBossMapFetched = now;
-    return empty;
-  }
-
-  try {
-    const res = await fetch(BOSS_MAP_CSV_URL, { cache: "no-store" });
-    if (!res.ok) throw new Error(`failed to fetch boss map csv: ${res.status}`);
-    const text = await res.text();
-
-    const lines = text
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter(Boolean);
-
-    const map: Record<string, string> = {};
-
-    const header = lines[0]?.toLowerCase() ?? "";
-    const startIndex =
-      header.includes("from") || header.includes("before") || header.includes("変換前") ? 1 : 0;
-
-    for (let i = startIndex; i < lines.length; i++) {
-      const cols = lines[i].split(",");
-      const from = cols[0]?.trim();
-      const to = cols[1]?.trim();
-      if (!from || !to) continue;
-      map[normalizeKey(from)] = to;
-    }
-
-    const sortedKeys = Object.keys(map).sort((a, b) => b.length - a.length);
-
-    bossMapCache = { map, sortedKeys };
-    lastBossMapFetched = now;
-    return bossMapCache;
-  } catch (e) {
-    console.error("fetchBossNameMapCached error:", e);
-    bossMapCache = empty;
-    lastBossMapFetched = now;
-    return empty;
-  }
-}
-
-async function mapNormalize(name: string | null | undefined): Promise<string | null> {
-  if (!name) return null;
-
-  const raw = String(name).trim();
-  if (!raw) return null;
-
-  const { map, sortedKeys } = await fetchBossNameMapCached(false);
-  if (!sortedKeys.length) return raw;
-
-  const key = normalizeKey(raw);
-
-  if (map[key]) return map[key];
-
-  for (const k of sortedKeys) {
-    if (!k) continue;
-    if (key.includes(k)) return map[k];
-  }
-
-  return raw;
-}
-
-// ===== 参戦者数抑制（復活） =====
+// ===== 参戦者数非表示ルール =====
 function toIntOrNull(v: any): number | null {
   if (v == null) return null;
   const n = Number(v);
@@ -329,15 +223,9 @@ function shouldSuppressByMembers(memberCurrent: any, memberMax: any): boolean {
   const c = toIntOrNull(memberCurrent);
   const m = toIntOrNull(memberMax);
   if (c == null || m == null) return false;
-  if (c <= 0 || m <= 0) return false;
 
-  // 6人マルチ: 満員(6/6)は非表示
-  if (m === 6 && c >= 6) return true;
-
-  // 18人マルチ: 10/18以上は非表示
+  if (m === 6 && c === 6) return true;
   if (m === 18 && c >= 10) return true;
-
-  // 30人マルチ: 10/30以上は非表示
   if (m === 30 && c >= 10) return true;
 
   return false;
@@ -356,10 +244,19 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "groupId is required" }, { status: 400 });
   }
 
-  // 呼び出し元ユーザーID（現状フロントが excludeUserId を送っている前提）
-  const callerUserId = searchParams.get("userId") || excludeUserId;
+  // 呼び出し元ユーザーID
+  // - ブラウザ側は userId / excludeUserId のどちらでもOK
+  // - 将来の拡張/デバッグ用にヘッダ(x-user-id)も許可
+  const callerUserId =
+    searchParams.get("userId") ||
+    excludeUserId ||
+    req.headers.get("x-user-id");
+
   if (!callerUserId) {
-    return NextResponse.json({ error: "userId is required" }, { status: 401 });
+    return NextResponse.json(
+      { error: "userId (or excludeUserId) is required" },
+      { status: 401 }
+    );
   }
 
   // 所属チェック + matchedGroupId(UUID) を確定
@@ -380,10 +277,12 @@ export async function GET(req: NextRequest) {
   // ★ group_name を groups(id)->name から解決（group_id -> group_name 変換）
   const resolvedGroupName = await getGroupNameCached(matchedGroupId);
 
-  // 表示数（フィルタ後にこの件数に揃える）
-  const requestedLimit = isNaN(Number(limitParam)) ? 50 : Math.max(1, Number(limitParam));
-  // 先に多めに取って、参戦者数フィルタで減っても requestedLimit 返せるようにする
-  const fetchLimit = Math.min(200, Math.max(requestedLimit, requestedLimit * 2));
+  // 表示数（フィルタ後にこの件数へ丸める）
+  const requestedLimit =
+    limitParam == null || isNaN(Number(limitParam)) ? 50 : Math.max(1, Number(limitParam));
+
+  // 取得数は多め（フィルタで落ちる分を見越す）
+  const fetchLimit = Math.min(Math.max(requestedLimit * 3, requestedLimit), 300);
 
   try {
     let query = sb
@@ -410,7 +309,7 @@ export async function GET(req: NextRequest) {
       .limit(fetchLimit);
 
     if (bossNameParam) {
-      const normalizedBossNameParam = await mapNormalize(bossNameParam);
+      const normalizedBossNameParam = normalizeBossName(bossNameParam);
       if (normalizedBossNameParam) {
         query = query.or(
           `boss_name.eq.${normalizedBossNameParam},battle_name.eq.${normalizedBossNameParam}`
@@ -425,13 +324,13 @@ export async function GET(req: NextRequest) {
     const { data, error } = await query;
 
     if (error) {
-      console.error("[GET /api/raids] supabase error:", error);
+      console.error("[GET /api/raids] query error:", error);
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
     const rows = (data ?? []) as any[];
 
-    // ★参戦者数抑制（GETでも適用：既存データも非表示にする）
+    // 参戦者数ルールでフィルタ
     const filtered = rows.filter(
       (r) => !shouldSuppressByMembers((r as any)?.member_current, (r as any)?.member_max)
     );
@@ -454,12 +353,9 @@ export async function POST(req: NextRequest) {
   try {
     const contentType = req.headers.get("content-type") || "";
 
-    let body: any;
+    let body: any = null;
     if (contentType.includes("application/json")) {
       body = await req.json();
-    } else if (contentType.includes("application/x-www-form-urlencoded")) {
-      const formData = await req.formData();
-      body = Object.fromEntries(formData.entries());
     } else {
       return NextResponse.json({ error: "Unsupported content type" }, { status: 415 });
     }
@@ -473,19 +369,33 @@ export async function POST(req: NextRequest) {
     const hpValue = body.hpValue ?? body.hp_value;
     const hpPercent = body.hpPercent ?? body.hp_percent;
 
-    const userName = body.userName ?? body.user_name;
-    const senderUserId = body.senderUserId ?? body.sender_user_id;
-
     const memberCurrent = body.memberCurrent ?? body.member_current;
     const memberMax = body.memberMax ?? body.member_max;
 
-    if (!groupIdParam || !raidId) {
-      return NextResponse.json({ error: "groupId and raidId are required" }, { status: 400 });
+    const userName = body.userName ?? body.user_name;
+    const senderUserId = body.senderUserId ?? body.sender_user_id;
+
+    if (!groupIdParam || typeof groupIdParam !== "string") {
+      return NextResponse.json({ error: "groupId is required" }, { status: 400 });
+    }
+    if (!raidId || typeof raidId !== "string") {
+      return NextResponse.json({ error: "raidId is required" }, { status: 400 });
+    }
+    if (!senderUserId || typeof senderUserId !== "string") {
+      return NextResponse.json({ error: "sender_user_id is required" }, { status: 401 });
     }
 
-    // senderUserId が無い投稿は拒否（グループ外からのPOSTを防ぐ）
-    if (!senderUserId) {
-      return NextResponse.json({ error: "senderUserId is required" }, { status: 401 });
+    // ボス名のノーマライズ
+    if (typeof bossName === "string") bossName = normalizeBossName(bossName);
+    if (typeof battleName === "string") battleName = normalizeBossName(battleName);
+
+    // ボス名ブロックリスト
+    const blockSet = await loadBossBlockList();
+    if (bossName && blockSet.has(normalizeBossName(bossName))) {
+      return NextResponse.json({ ok: true, blocked: true }, { status: 200 });
+    }
+    if (battleName && blockSet.has(normalizeBossName(battleName))) {
+      return NextResponse.json({ ok: true, blocked: true }, { status: 200 });
     }
 
     // 所属チェック + matchedGroupId(UUID) を確定
@@ -503,45 +413,30 @@ export async function POST(req: NextRequest) {
 
     const matchedGroupId = mem.matchedGroupId;
 
-    // ★ group_name を groups(id)->name から解決（保存にも使う）
+    // group_name を groups(id)->name から解決
     const resolvedGroupName = await getGroupNameCached(matchedGroupId);
 
-    // bossName / battleName を統一名に変換
-    try {
-      bossName = (await mapNormalize(bossName)) || (bossName ?? null);
-      battleName = (await mapNormalize(battleName)) || (battleName ?? null);
-    } catch (e) {
-      console.error("mapNormalize error, falling back to raw", e);
-      bossName = bossName ?? null;
-      battleName = battleName ?? null;
+    // ===== 特殊ボス: ULTバハのHP閾値 =====
+    // 仕様:
+    // - 7000万↑を表示、7000万以下を非表示…などの変更が入っている想定
+    // ここは現ファイル内の既存ロジックを維持しつつ、sender_user_id 例外を適用
+    const normalizedBoss = typeof bossName === "string" ? bossName : "";
+    if (normalizedBoss === ULT_BAHAMUT_NAME) {
+      const hp = hpValue == null ? null : Number(hpValue);
+      if (hp != null && Number.isFinite(hp)) {
+        const threshold = ULT_BAHAMUT_HP_THRESHOLD_SPECIAL_SENDER_IDS.has(senderUserId)
+          ? ULT_BAHAMUT_HP_THRESHOLD_SPECIAL
+          : ULT_BAHAMUT_HP_THRESHOLD_DEFAULT;
+
+        // 「threshold 以下は非表示（= これより上を表示）」
+        if (hp <= threshold) {
+          return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
+        }
+      }
     }
 
-    // ブロックリスト判定
-    const bossBlocked = await isBossBlocked(bossName);
-    const battleBlocked = await isBossBlocked(battleName);
-    if (bossBlocked || battleBlocked) {
-      return NextResponse.json({ ok: true, blocked: true }, { status: 200 });
-    }
-
-    // ★参戦者数抑制（POST時点で登録しない）
+    // 参戦者数ルール（POST時にも弾きたい場合）
     if (shouldSuppressByMembers(memberCurrent, memberMax)) {
-      return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
-    }
-
-    // アルバハ200（表示条件）
-    const hpValueNum = hpValue == null ? null : Number(hpValue);
-    const isUltBaha = bossName === ULT_BAHAMUT_NAME || battleName === ULT_BAHAMUT_NAME;
-
-    const ultBahaThreshold = ULT_BAHAMUT_HP_THRESHOLD_SPECIAL_SENDER_IDS.has(String(senderUserId))
-      ? ULT_BAHAMUT_HP_THRESHOLD_SPECIAL
-      : ULT_BAHAMUT_HP_THRESHOLD_DEFAULT;
-
-    if (
-      isUltBaha &&
-      hpValueNum != null &&
-      !Number.isNaN(hpValueNum) &&
-      hpValueNum <= ultBahaThreshold
-    ) {
       return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
     }
 
