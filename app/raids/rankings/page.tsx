@@ -5,8 +5,30 @@ export const dynamic = "force-dynamic";
 import React, { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 
-type Poster = { sender_user_id: string | null; user_name: string | null; post_count: number; };
-type Battle = { battle_name: string; post_count: number; };
+type Poster = {
+  sender_user_id: string | null;
+  // ★ API側で「期間内にそのユーザーが最後に使った user_name」を返す想定
+  user_name: string | null;
+  post_count: number;
+};
+
+type Battle = { battle_name: string; post_count: number };
+
+function shortId(id: string, head = 8): string {
+  if (!id) return "";
+  return id.length <= head ? id : `${id.slice(0, head)}…`;
+}
+
+function displayPosterName(p: Poster): string {
+  // 表示名は「最後に使用した user_name」
+  // ただし null の場合に備えて sender_user_id をフォールバック表示
+  const name = (p.user_name ?? "").trim();
+  if (name) return name;
+
+  const uid = (p.sender_user_id ?? "").trim();
+  if (uid) return `(不明: ${shortId(uid)})`;
+  return "(不明)";
+}
 
 export default function RaidRankingsPage() {
   const router = useRouter();
@@ -34,11 +56,24 @@ export default function RaidRankingsPage() {
     setLoading(true);
     try {
       const [pRes, bRes] = await Promise.all([
-        fetch(`/api/raids/rank/top-posters?group_id=${encodeURIComponent(groupId)}&days=${days}&limit=${limit}`),
-        fetch(`/api/raids/rank/top-battles?group_id=${encodeURIComponent(groupId)}&days=${days}&limit=${limit}`)
+        // ★ 投稿者ランキングは group_id ごと（従来通り）
+        // ★ 集計キーは sender_user_id（API側で対応）
+        // ★ user_name は「最後に使用したもの」（API側で対応）
+        fetch(
+          `/api/raids/rank/top-posters?group_id=${encodeURIComponent(
+            groupId
+          )}&days=${days}&limit=${limit}`
+        ),
+        fetch(
+          `/api/raids/rank/top-battles?group_id=${encodeURIComponent(
+            groupId
+          )}&days=${days}&limit=${limit}`
+        ),
       ]);
+
       const pj = await pRes.json();
       const bj = await bRes.json();
+
       setPosters(pj.ok ? (pj.data as Poster[]) : []);
       setBattles(bj.ok ? (bj.data as Battle[]) : []);
     } catch (e) {
@@ -71,7 +106,7 @@ export default function RaidRankingsPage() {
   return (
     <div className="p-4 bg-slate-900 min-h-screen text-slate-50">
       <div className="flex items-center justify-between mb-3">
-        <h1 className="text-xl font-bold">ランキング（グループ: {groupId || "未指定"})</h1>
+        <h1 className="text-xl font-bold">ランキング（グループ: {groupId || "未指定"}）</h1>
         <div className="flex items-center gap-2">
           <button
             onClick={handleBackToGroup}
@@ -83,7 +118,6 @@ export default function RaidRankingsPage() {
       </div>
 
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        {/* 期間 */}
         <label className="text-white">期間(日):</label>
         <select
           value={days}
@@ -96,7 +130,6 @@ export default function RaidRankingsPage() {
           <option value={365}>全期間</option>
         </select>
 
-        {/* 表示数 */}
         <label className="text-white">表示数:</label>
         <input
           type="number"
@@ -107,7 +140,6 @@ export default function RaidRankingsPage() {
           className="w-20 border rounded px-2 py-1 text-black"
         />
 
-        {/* 自動更新 */}
         <label className="text-white flex items-center gap-1">
           <input
             type="checkbox"
@@ -118,10 +150,7 @@ export default function RaidRankingsPage() {
           自動更新
         </label>
 
-        <button
-          onClick={fetchRankings}
-          className="ml-2 px-3 py-1 bg-white text-black rounded"
-        >
+        <button onClick={fetchRankings} className="ml-2 px-3 py-1 bg-white text-black rounded">
           手動更新
         </button>
 
@@ -136,8 +165,19 @@ export default function RaidRankingsPage() {
               <li>データがありません</li>
             ) : (
               posters.map((p, i) => (
-                <li key={p.sender_user_id ?? i} className="flex justify-between items-center bg-slate-800 rounded px-2 py-1">
-                  <div><strong>{i + 1}.</strong> {p.user_name || "(不明)"}</div>
+                <li
+                  key={`${p.sender_user_id ?? "unknown"}-${i}`}
+                  className="flex justify-between items-center bg-slate-800 rounded px-2 py-1"
+                >
+                  <div className="flex flex-col">
+                    <div>
+                      <strong>{i + 1}.</strong> {displayPosterName(p)}
+                    </div>
+                    {/* デバッグ/識別用に user_id も小さく表示（不要なら削除OK） */}
+                    {p.sender_user_id && (
+                      <div className="text-xs text-slate-300">user_id: {shortId(p.sender_user_id, 12)}</div>
+                    )}
+                  </div>
                   <div>{p.post_count}</div>
                 </li>
               ))
@@ -152,8 +192,13 @@ export default function RaidRankingsPage() {
               <li>データがありません</li>
             ) : (
               battles.map((b, i) => (
-                <li key={b.battle_name ?? i} className="flex justify-between items-center bg-slate-800 rounded px-2 py-1">
-                  <div><strong>{i + 1}.</strong> {b.battle_name}</div>
+                <li
+                  key={`${b.battle_name ?? "unknown"}-${i}`}
+                  className="flex justify-between items-center bg-slate-800 rounded px-2 py-1"
+                >
+                  <div>
+                    <strong>{i + 1}.</strong> {b.battle_name}
+                  </div>
                   <div>{b.post_count}</div>
                 </li>
               ))
