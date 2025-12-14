@@ -13,7 +13,17 @@ const sb: any = supabase; // ★型推論を止める（Vercelビルド安定化
 
 // ===== 定数: 特殊ボスの判定 =====
 const ULT_BAHAMUT_NAME = "Lv200 アルティメットバハムート";
-const ULT_BAHAMUT_HP_THRESHOLD = 70000000; // 70,000,000
+
+// 通常: 70,000,000 以下は非表示（= 70,000,000 より上を表示）
+const ULT_BAHAMUT_HP_THRESHOLD_DEFAULT = 65000000;
+
+// 一部 sender_user_id のみ: 76,000,000 以下は非表示（= 76,000,000 より上を表示）
+const ULT_BAHAMUT_HP_THRESHOLD_SPECIAL = 76000000;
+const ULT_BAHAMUT_HP_THRESHOLD_SPECIAL_SENDER_IDS = new Set<string>([
+  "461f0458-5494-47fc-b142-98e3eb389bdd",
+  "86f9ace9-dad7-4daa-9c28-adb44759c252",
+  "8cf84c8f-2052-47fb-a3a9-cf7f2980eef4",
+]);
 
 // ===== groupId 解決（Apoklisi -> UUID） =====
 function isUuidLike(s: string) {
@@ -438,19 +448,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
     }
 
-    // アルバハ200（表示条件を「7000万超のみ通す」に変更）
-    //  - 表示: 70,000,000 より上（7000万↑）
-    //  - 非表示: 70,000,000 以下（7000万以下）
+    // アルバハ200（表示条件）
+    //  - 通常: 70,000,000 より上（7000万↑）を表示 / 70,000,000 以下は非表示
+    //  - 特定の sender_user_id のみ: 76,000,000 より上（7600万↑）を表示 / 76,000,000 以下は非表示
     const hpValueNum = hpValue == null ? null : Number(hpValue);
-    const isUltBaha =
-      bossName === ULT_BAHAMUT_NAME || battleName === ULT_BAHAMUT_NAME;
+    const isUltBaha = bossName === ULT_BAHAMUT_NAME || battleName === ULT_BAHAMUT_NAME;
 
-    if (
-      isUltBaha &&
-      hpValueNum != null &&
-      !Number.isNaN(hpValueNum) &&
-      hpValueNum <= ULT_BAHAMUT_HP_THRESHOLD
-    ) {
+    const ultBahaThreshold = ULT_BAHAMUT_HP_THRESHOLD_SPECIAL_SENDER_IDS.has(String(senderUserId))
+      ? ULT_BAHAMUT_HP_THRESHOLD_SPECIAL
+      : ULT_BAHAMUT_HP_THRESHOLD_DEFAULT;
+
+    if (isUltBaha && hpValueNum != null && !Number.isNaN(hpValueNum) && hpValueNum <= ultBahaThreshold) {
       return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
     }
 
