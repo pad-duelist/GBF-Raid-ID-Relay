@@ -1,7 +1,7 @@
 // app/g/[groupId]/GroupPageClient.tsx
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { formatTimeAgo } from "@/lib/timeAgo";
 import { formatNumberWithComma } from "@/lib/numberFormat";
@@ -33,9 +33,6 @@ const COPIED_IDS_KEY = "gbf-copied-raid-ids";
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/**
- * ★ラッパー：アクセス判定 + （可能なら）group_id(uuid)へ正規化
- */
 export default function GroupPageClient({ groupId }: { groupId: string }) {
   const router = useRouter();
 
@@ -66,7 +63,6 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
           return;
         }
 
-        // 1) アクセス判定（既存仕様）
         const res = await fetch(
           `/api/group-access?groupId=${encodeURIComponent(groupId)}&userId=${encodeURIComponent(
             userId.trim()
@@ -87,7 +83,6 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
           return;
         }
 
-        // 2) ★group_id(uuid)を可能なら確定（group-accessが返しているならそれを優先）
         let resolvedId: string | null =
           json?.group_id ?? json?.groupId ?? json?.group?.id ?? json?.group?.group_id ?? null;
 
@@ -98,7 +93,6 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
           resolvedId = groupId;
         }
 
-        // resolve APIがあれば利用（なければ無視してfallback）
         if (!resolvedId && !UUID_RE.test(groupId)) {
           try {
             const r2 = await fetch(`/api/groups/resolve?key=${encodeURIComponent(groupId)}`, {
@@ -111,9 +105,7 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
                 resolvedName = j2.group.name ?? resolvedName;
               }
             }
-          } catch {
-            // ignore
-          }
+          } catch {}
         }
 
         if (!cancelled) {
@@ -166,9 +158,13 @@ function GroupPageInner({ groupId, groupName }: { groupId: string; groupName: st
   const lastTopRaidIdRef = useRef<string | null>(null);
   const [copiedIds, setCopiedIds] = useState<Set<string>>(new Set<string>());
 
-  const { map: battleNameMap } = useBattleNameMap();
+  // ✅ 型が曖昧でも安全にRecordへ正規化
+  const { map: battleNameMapRaw } = useBattleNameMap();
+  const battleNameMap: Record<string, string> = useMemo(() => {
+    const m: any = battleNameMapRaw ?? {};
+    return (m && typeof m === "object") ? (m as Record<string, string>) : {};
+  }, [battleNameMapRaw]);
 
-  // ✅ 修正点：mapping ではなく map
   const { map: battleMapping } = useBattleMapping();
 
   const [seriesOptions, setSeriesOptions] = useState<string[]>([]);
@@ -227,7 +223,6 @@ function GroupPageInner({ groupId, groupName }: { groupId: string; groupName: st
       query.set("limit", "50");
       query.set("debug", "0");
 
-      // ★必須：所属チェック用 + 自分の投稿除外
       const userId =
         typeof window !== "undefined" ? window.localStorage.getItem("extensionUserId") : null;
       if (userId && userId.trim()) {
@@ -432,7 +427,9 @@ function GroupPageInner({ groupId, groupName }: { groupId: string; groupName: st
             const copied = copiedIds.has(r.raid_id);
 
             const battleLabel =
-              r.battle_name && battleNameMap[r.battle_name] ? battleNameMap[r.battle_name] : r.battle_name;
+              r.battle_name && battleNameMap[r.battle_name]
+                ? battleNameMap[r.battle_name]
+                : r.battle_name;
 
             const bossOrBattle = battleLabel ?? r.boss_name ?? "";
 
@@ -453,19 +450,17 @@ function GroupPageInner({ groupId, groupName }: { groupId: string; groupName: st
                   copied ? "bg-slate-800/40 border-slate-700 text-slate-400" : "bg-slate-800 border-slate-600"
                 }`}
               >
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="min-w-0">
-                    <div className="text-sm truncate">
-                      {r.user_name ? <span className="text-slate-200">{r.user_name}</span> : null}
-                      {r.user_name ? <span className="text-slate-500"> / </span> : null}
-                      <span className="text-slate-300">{formatTimeAgo(r.created_at)}</span>
-                    </div>
+                <div className="min-w-0">
+                  <div className="text-sm truncate">
+                    {r.user_name ? <span className="text-slate-200">{r.user_name}</span> : null}
+                    {r.user_name ? <span className="text-slate-500"> / </span> : null}
+                    <span className="text-slate-300">{formatTimeAgo(r.created_at)}</span>
+                  </div>
 
-                    <div className="text-xs text-slate-400 flex gap-3">
-                      <span>{looksLikeUrl(bossOrBattle) ? "" : <span className="font-semibold">{bossOrBattle}</span>}</span>
-                      <span>HP: {hpText}</span>
-                      <span>参戦: {memberText}</span>
-                    </div>
+                  <div className="text-xs text-slate-400 flex flex-wrap gap-x-3 gap-y-1">
+                    {looksLikeUrl(bossOrBattle) ? null : <span className="font-semibold">{bossOrBattle}</span>}
+                    <span>HP: {hpText}</span>
+                    <span>参戦: {memberText}</span>
                   </div>
                 </div>
 
