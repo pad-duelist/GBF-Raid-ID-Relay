@@ -205,7 +205,7 @@ async function isBossBlocked(name: string | null | undefined): Promise<boolean> 
 
 // ===== ボス名 CSV マッピング関連 =====
 const BOSS_MAP_CSV_URL =
-  process.env.BOSS_NAME_MAP_CSV_URL ?? process.env.NEXT_PUBLIC_BOSS_NAME_MAP_CSV_URL;
+  process.env.BOSS_MAP_CSV_URL ?? process.env.NEXT_PUBLIC_BOSS_NAME_MAP_CSV_URL;
 
 let bossMapCache: { map: Record<string, string>; sortedKeys: string[] } | null = null;
 let lastBossMapFetched = 0;
