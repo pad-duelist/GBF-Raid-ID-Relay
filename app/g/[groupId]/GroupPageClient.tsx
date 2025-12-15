@@ -620,7 +620,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
       <div className="max-w-3xl mx-auto space-y-4">
         <header className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-xl font-bold">GBF Raid ID Relay</h1>
+            <h1 className="text-lg font-bold">GBF Raid ID Relay</h1>
             <div className="text-xl font-bold text-white mt-1">グループ: {groupId}</div>
           </div>
 
@@ -643,7 +643,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
               </div>
 
               <div className="flex flex-col">
-                <label className="text-xs sm:text-sm text-slate-300 mb-1">シリーズ絞り込み</label>
+                <label className="text-xs sm:text-sm text-slate-300 mb-1">シリーズ</label>
                 <select
                   className="bg-slate-800 border border-slate-600 rounded px-3 text-xs sm:text-sm h-9"
                   value={seriesFilter}
