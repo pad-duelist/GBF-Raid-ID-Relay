@@ -20,7 +20,7 @@ const ULT_BAHAMUT_NAME = "Lv200 アルティメットバハムート";
 // Lv200 アルティメットバハムートの「非表示」判定（hpValue <= threshold）
 // 通常: 70,000,000
 // 一部送信者のみ: 76,000,000
-const ULT_BAHAMUT_HP_THRESHOLD_DEFAULT = 65000000;
+const ULT_BAHAMUT_HP_THRESHOLD_DEFAULT = 70000000;
 const ULT_BAHAMUT_HP_THRESHOLD_SPECIAL = 76000000;
 
 // 「一部ユーザーIDからの送信時のみ 7,600万へ引き上げ」対象
