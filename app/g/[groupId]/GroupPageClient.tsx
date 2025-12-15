@@ -30,6 +30,7 @@ const NOTIFY_ENABLED_KEY = "gbf-raid-notify-enabled";
 const NOTIFY_VOLUME_KEY = "gbf-raid-notify-volume";
 const AUTO_COPY_ENABLED_KEY = "gbf-raid-auto-copy-enabled";
 const COPIED_IDS_KEY = "gbf-copied-raid-ids";
+const MEMBER_MAX_FILTER_KEY = "gbf-raid-member-max-filter";
 
 /**
  * ★ラッパー：アクセス判定だけを担当
@@ -122,6 +123,9 @@ function GroupPageInner({ groupId }: { groupId: string }) {
   const [loading, setLoading] = useState(true);
   const [bossFilter, setBossFilter] = useState<string>("");
   const [seriesFilter, setSeriesFilter] = useState<string>("");
+  // ★追加：参戦者数（現在）がこの人数以下のみ表示（""=無制限）
+  const [memberMaxFilter, setMemberMaxFilter] = useState<number | null>(null);
+
   const [copyMessage, setCopyMessage] = useState<string | null>(null);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -149,6 +153,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
   const fetchRaidsRef = useRef<() => Promise<RaidRow[]>>(async () => []);
   const bossFilterRef = useRef<string>("");
   const seriesFilterRef = useRef<string>("");
+  const memberMaxFilterRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -299,6 +304,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     const savedEnabled = window.localStorage.getItem(NOTIFY_ENABLED_KEY);
     const savedVolume = window.localStorage.getItem(NOTIFY_VOLUME_KEY);
     const savedAutoCopy = window.localStorage.getItem(AUTO_COPY_ENABLED_KEY);
+    const savedMemberMax = window.localStorage.getItem(MEMBER_MAX_FILTER_KEY);
 
     if (savedEnabled !== null) setNotifyEnabled(savedEnabled === "true");
     if (savedVolume !== null) {
@@ -306,6 +312,13 @@ function GroupPageInner({ groupId }: { groupId: string }) {
       if (!Number.isNaN(v) && v >= 0 && v <= 1) setNotifyVolume(v);
     }
     if (savedAutoCopy !== null) setAutoCopyEnabled(savedAutoCopy === "true");
+
+    // ★追加：参戦者数フィルタ復元（""/null = 無制限）
+    if (savedMemberMax !== null) {
+      const n = Number(savedMemberMax);
+      if (!Number.isNaN(n) && n >= 2 && n <= 5) setMemberMaxFilter(n);
+      else setMemberMaxFilter(null);
+    }
   }, []);
 
   useEffect(() => {
@@ -313,7 +326,8 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     window.localStorage.setItem(NOTIFY_ENABLED_KEY, String(notifyEnabled));
     window.localStorage.setItem(NOTIFY_VOLUME_KEY, String(notifyVolume));
     window.localStorage.setItem(AUTO_COPY_ENABLED_KEY, String(autoCopyEnabled));
-  }, [notifyEnabled, notifyVolume, autoCopyEnabled]);
+    window.localStorage.setItem(MEMBER_MAX_FILTER_KEY, memberMaxFilter == null ? "" : String(memberMaxFilter));
+  }, [notifyEnabled, notifyVolume, autoCopyEnabled, memberMaxFilter]);
 
   // ref同期（イベントハンドラで最新値を参照するため）
   useEffect(() => {
@@ -325,6 +339,9 @@ function GroupPageInner({ groupId }: { groupId: string }) {
   useEffect(() => {
     seriesFilterRef.current = seriesFilter;
   }, [seriesFilter]);
+  useEffect(() => {
+    memberMaxFilterRef.current = memberMaxFilter;
+  }, [memberMaxFilter]);
 
   const playNotifySound = useCallback(() => {
     if (!notifyEnabled) return;
@@ -351,6 +368,13 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     return (battleMap as any)?.[name];
   };
 
+  const matchesMemberMax = (raid: RaidRow, max: number | null): boolean => {
+    if (max == null) return true;
+    // 参戦者数が取れないものは判定不能なので表示（必要なら false に変更可能）
+    if (raid.member_current == null) return true;
+    return raid.member_current <= max;
+  };
+
   const uniqueBosses = Array.from(
     new Set(
       raids
@@ -373,7 +397,8 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     const matchBoss = bossFilter ? getDisplayName(raid) === bossFilter : true;
     const raidSeries = (raid.series ?? "").toString().trim();
     const matchSeries = seriesFilter ? raidSeries === seriesFilter : true;
-    return matchBoss && matchSeries;
+    const matchMember = matchesMemberMax(raid, memberMaxFilter);
+    return matchBoss && matchSeries && matchMember;
   });
 
   // filteredRaids をイベントハンドラから参照できるようにref同期
@@ -398,7 +423,8 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     const applySuppressForAutoCopyEffect = (list: RaidRow[]) => {
       const bf = bossFilterRef.current;
       const sf = seriesFilterRef.current;
-      prevFilterRef.current = `${bf}|${sf}`;
+      const mf = memberMaxFilterRef.current;
+      prevFilterRef.current = `${bf}|${sf}|${mf ?? ""}`;
       autoCopyInitializedRef.current = true;
       seenFilteredRaidIdsRef.current = new Set(list.map((r) => r.id));
     };
@@ -455,12 +481,14 @@ function GroupPageInner({ groupId }: { groupId: string }) {
 
           const bf = bossFilterRef.current;
           const sf = seriesFilterRef.current;
+          const mf = memberMaxFilterRef.current;
 
           const list = merged.filter((r) => {
             const matchBoss = bf ? getDisplayName(r) === bf : true;
             const raidSeries = (r.series ?? "").toString().trim();
             const matchSeries = sf ? raidSeries === sf : true;
-            return matchBoss && matchSeries;
+            const matchMember = matchesMemberMax(r, mf);
+            return matchBoss && matchSeries && matchMember;
           });
           if (!list || list.length === 0) return;
 
@@ -516,11 +544,12 @@ function GroupPageInner({ groupId }: { groupId: string }) {
       const matchBoss = bossFilter ? getDisplayName(r) === bossFilter : true;
       const raidSeries = (r.series ?? "").toString().trim();
       const matchSeries = seriesFilter ? raidSeries === seriesFilter : true;
-      return matchBoss && matchSeries;
+      const matchMember = matchesMemberMax(r, memberMaxFilter);
+      return matchBoss && matchSeries && matchMember;
     });
 
     if (hasMatch) playNotifySound();
-  }, [raids, bossFilter, seriesFilter, playNotifySound]);
+  }, [raids, bossFilter, seriesFilter, memberMaxFilter, playNotifySound]);
 
   useEffect(() => {
     if (!filteredRaids || filteredRaids.length === 0) {
@@ -529,7 +558,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     }
 
     const currentIds = new Set(filteredRaids.map((r) => r.id));
-    const combinedFilterKey = `${bossFilter}|${seriesFilter}`;
+    const combinedFilterKey = `${bossFilter}|${seriesFilter}|${memberMaxFilter ?? ""}`;
     const filterChanged = combinedFilterKey !== prevFilterRef.current;
     prevFilterRef.current = combinedFilterKey;
 
@@ -562,7 +591,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     }
 
     seenFilteredRaidIdsRef.current = currentIds;
-  }, [filteredRaids, bossFilter, seriesFilter, autoCopyEnabled, addToCopied]);
+  }, [filteredRaids, bossFilter, seriesFilter, memberMaxFilter, autoCopyEnabled, addToCopied]);
 
   const normalizePercent = (raw: number | null | undefined): number | null => {
     if (raw == null) return null;
@@ -626,6 +655,30 @@ function GroupPageInner({ groupId }: { groupId: string }) {
                       {s}
                     </option>
                   ))}
+                </select>
+              </div>
+
+              {/* ★追加：参戦者数フィルタ（現在人数がN以下） */}
+              <div className="flex flex-col">
+                <label className="text-xs sm:text-sm text-slate-300 mb-1">参戦者数</label>
+                <select
+                  className="bg-slate-800 border border-slate-600 rounded px-3 text-xs sm:text-sm h-9"
+                  value={memberMaxFilter == null ? "" : String(memberMaxFilter)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (!v) setMemberMaxFilter(null);
+                    else {
+                      const n = Number(v);
+                      if (!Number.isNaN(n)) setMemberMaxFilter(n);
+                      else setMemberMaxFilter(null);
+                    }
+                  }}
+                >
+                  <option value="">すべて</option>
+                  <option value="5">5人以下</option>
+                  <option value="4">4人以下</option>
+                  <option value="3">3人以下</option>
+                  <option value="2">2人以下</option>
                 </select>
               </div>
 
