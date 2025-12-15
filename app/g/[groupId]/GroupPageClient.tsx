@@ -272,7 +272,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
   useEffect(() => {
     setLoading(true);
     fetchRaids();
-    const timer = setInterval(fetchRaids, 1000);
+    const timer = setInterval(fetchRaids, 500);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId, battleMappingMap]);
