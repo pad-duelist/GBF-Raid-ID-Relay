@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-// ===== ユーティリティ: JST(+09:00) の ISO 文字列 =====
+// ===== ユーティリティ: JST(+09:00) の ISO を作る（created_at をJSTで返したい用途） =====
 function toJstIso(d: Date) {
   const z = new Date(d.getTime() + 9 * 60 * 60 * 1000);
   const yyyy = z.getUTCFullYear();
@@ -14,31 +14,14 @@ function toJstIso(d: Date) {
   return `${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}+09:00`;
 }
 
-function isUuidLike(s: string) {
-  // 厳密v4に寄せず「UUIDっぽい」判定（既存データの揺れ対策）
-  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(
-    s
-  );
-}
-
-function toNumberOrNull(v: any): number | null {
-  if (v === null || v === undefined || v === "") return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
-function toStringOrNull(v: any): string | null {
-  if (v === null || v === undefined) return null;
-  const s = String(v).trim();
-  return s === "" ? null : s;
-}
-
 // ===== 定数: 特殊ボスの判定 =====
 const ULT_BAHAMUT_NAME = "Lv200 アルティメットバハムート";
 
-// Lv200 アルティメットバハムートの「非表示」判定（hp_value <= threshold なら抑止）
-const ULT_BAHAMUT_HP_THRESHOLD_DEFAULT = 70_000_000;
-const ULT_BAHAMUT_HP_THRESHOLD_SPECIAL = 76_000_000;
+// Lv200 アルティメットバハムートの「非表示」判定（hpValue <= threshold）
+// 通常: 70,000,000
+// 一部送信者のみ: 76,000,000
+const ULT_BAHAMUT_HP_THRESHOLD_DEFAULT = 70000000;
+const ULT_BAHAMUT_HP_THRESHOLD_SPECIAL = 76000000;
 
 // 「一部ユーザーIDからの送信時のみ 7,600万へ引き上げ」対象
 const ULT_BAHAMUT_HP_THRESHOLD_SPECIAL_SENDERS = new Set<string>([
@@ -57,101 +40,153 @@ const sb = createClient(supabaseUrl, supabaseKey, {
   auth: { persistSession: false },
 });
 
-/**
- * groupId(=UUID) / groupName(=文字列) を受け取り、groups.id(UUID) に解決する
- * - UUIDっぽい → groups.id で照合
- * - それ以外 → groups.name で照合
- *
- * ※動的カラム指定をしないので Type instantiation エラー回避
- */
-async function resolveGroupUuid(groupParam: string | null): Promise<string | null> {
-  if (!groupParam) return null;
-  const p = String(groupParam).trim();
-  if (!p) return null;
+// ===== groupId 解決（Apoklisi -> UUID） =====
+function isUuidLike(s: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    s
+  );
+}
 
-  // 1) UUIDっぽい場合は id として照合（存在確認もする）
-  if (isUuidLike(p)) {
-    const { data, error } = await sb.from("groups").select("id").eq("id", p).limit(1);
-    if (!error && data && data[0]?.id) return String(data[0].id);
-    // もし groups に無いUUIDが来たら無効扱い
-    return null;
+async function resolveGroupUuidCandidates(groupIdParam: string) {
+  // そのままUUIDならそれを候補として返す
+  const candidates: string[] = [];
+  if (typeof groupIdParam === "string" && isUuidLike(groupIdParam)) {
+    candidates.push(groupIdParam);
   }
 
-  // 2) 文字列は name として照合
-  const { data, error } = await sb.from("groups").select("id").eq("name", p).limit(1);
-  if (!error && data && data[0]?.id) return String(data[0].id);
+  // name / group_id / groupId などどのカラムでも拾えるように探索（過去互換）
+  // ※ Supabase 側の groups テーブル構成が環境で異なる想定
+  const tryColumn = async (col: string) => {
+    try {
+      const { data, error } = await sb
+        .from("groups")
+        .select("id")
+        .eq(col as any, groupIdParam)
+        .limit(1);
 
-  return null;
+      if (!error && data && data[0]?.id) return String(data[0].id);
+    } catch {
+      // ignore
+    }
+    return null;
+  };
+
+  // よくあるカラム名を順に試す
+  const cols = ["id", "group_id", "groupId", "name", "group_name", "groupName"];
+  for (const col of cols) {
+    const found = await tryColumn(col);
+    if (found && isUuidLike(found)) candidates.push(found);
+  }
+
+  // 重複排除
+  return Array.from(new Set(candidates));
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    const contentType = req.headers.get("content-type") || "";
 
-    // 柔軟に受け取り
-    const groupParam =
-      toStringOrNull(body?.group_id) ??
-      toStringOrNull(body?.groupId) ??
-      toStringOrNull(body?.group_name) ??
-      toStringOrNull(body?.groupName);
+    let body: any = {};
+    if (contentType.includes("application/json")) {
+      body = await req.json();
+    } else if (contentType.includes("application/x-www-form-urlencoded")) {
+      const formData = await req.formData();
+      body = Object.fromEntries(formData.entries());
+    } else {
+      return NextResponse.json(
+        { error: "Unsupported content type" },
+        { status: 415 }
+      );
+    }
 
-    const matchedGroupId = await resolveGroupUuid(groupParam);
+    const groupIdParam = body.groupId ?? body.group_id;
+    const raidId = body.raidId ?? body.raid_id;
+
+    let bossName = body.bossName ?? body.boss_name;
+    let battleName = body.battleName ?? body.battle_name;
+
+    const hpValue = body.hpValue ?? body.hp_value;
+    const hpPercent = body.hpPercent ?? body.hp_percent;
+
+    const userName = body.userName ?? body.user_name;
+    const senderUserId = body.senderUserId ?? body.sender_user_id;
+
+    // 参戦者数
+    const memberCurrent = body.memberCurrent ?? body.member_current ?? null;
+    const memberMax = body.memberMax ?? body.member_max ?? null;
+
+    if (!groupIdParam || !raidId) {
+      return NextResponse.json(
+        { error: "groupId and raidId are required" },
+        { status: 400 }
+      );
+    }
+
+    // groupIdParam が UUID でなくても groups から UUID を解決して raids.group_id に入れる
+    const candidates = await resolveGroupUuidCandidates(String(groupIdParam));
+    const matchedGroupId =
+      candidates[0] ?? (isUuidLike(String(groupIdParam)) ? String(groupIdParam) : null);
+
     if (!matchedGroupId) {
-      return NextResponse.json({ error: "Invalid groupId / groupName" }, { status: 400 });
+      return NextResponse.json(
+        { error: "Group not found / cannot resolve UUID" },
+        { status: 404 }
+      );
     }
 
-    const raidId =
-      toStringOrNull(body?.raid_id) ?? toStringOrNull(body?.raidId);
-    if (!raidId) {
-      return NextResponse.json({ error: "raid_id is required" }, { status: 400 });
-    }
-
-    const bossName =
-      toStringOrNull(body?.boss_name) ?? toStringOrNull(body?.bossName);
-    const battleName =
-      toStringOrNull(body?.battle_name) ?? toStringOrNull(body?.battleName);
-
-    const hpValue = toNumberOrNull(body?.hp_value ?? body?.hpValue);
-    const hpPercent = toNumberOrNull(body?.hp_percent ?? body?.hpPercent);
-
-    const memberCurrent = toNumberOrNull(body?.member_current ?? body?.memberCurrent);
-    const memberMax = toNumberOrNull(body?.member_max ?? body?.memberMax);
-
-    const senderUserId =
-      toStringOrNull(body?.sender_user_id) ?? toStringOrNull(body?.senderUserId);
-    const userName =
-      toStringOrNull(body?.user_name) ?? toStringOrNull(body?.userName);
-
-    // created_at を JST ISO で保存
+    // created_at を JST ISO で保存したい場合（既存仕様に合わせて）
     const createdAt = toJstIso(new Date());
 
-    // ===== Lv200 アルティメットバハムート: 非表示HPしきい値を一部送信者のみ 7,600万へ =====
-    const isUltBaha =
-      bossName === ULT_BAHAMUT_NAME || battleName === ULT_BAHAMUT_NAME;
+    // 空文字を正規化
+    bossName =
+      bossName == null || String(bossName).trim() === ""
+        ? null
+        : String(bossName);
+    battleName =
+      battleName == null || String(battleName).trim() === ""
+        ? null
+        : String(battleName);
+
+    // アルバハ200（表示条件: threshold超のみ通す）
+    //  - 通常送信者: 表示 70,000,000 超 / 非表示 70,000,000 以下
+    //  - 特定送信者: 表示 76,000,000 超 / 非表示 76,000,000 以下
+    const hpValueNum = hpValue == null ? null : Number(hpValue);
+    const isUltBaha = bossName === ULT_BAHAMUT_NAME || battleName === ULT_BAHAMUT_NAME;
+
+    const senderUserIdStr =
+      senderUserId == null ? null : String(senderUserId).trim();
 
     const ultBahaThreshold =
-      senderUserId && ULT_BAHAMUT_HP_THRESHOLD_SPECIAL_SENDERS.has(senderUserId)
+      senderUserIdStr && ULT_BAHAMUT_HP_THRESHOLD_SPECIAL_SENDERS.has(senderUserIdStr)
         ? ULT_BAHAMUT_HP_THRESHOLD_SPECIAL
         : ULT_BAHAMUT_HP_THRESHOLD_DEFAULT;
 
-    if (isUltBaha && hpValue !== null && hpValue <= ultBahaThreshold) {
-      // INSERT しない（抑止）
+    if (
+      isUltBaha &&
+      hpValueNum != null &&
+      !Number.isNaN(hpValueNum) &&
+      hpValueNum <= ultBahaThreshold
+    ) {
       return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
     }
 
-    // INSERT
+    // INSERT（group_id は matchedGroupId(UUID) を入れる）
     const { error } = await sb.from("raids").insert([
       {
         group_id: matchedGroupId,
         raid_id: raidId,
         boss_name: bossName,
         battle_name: battleName,
-        hp_value: hpValue,
-        hp_percent: hpPercent,
-        member_current: memberCurrent,
-        member_max: memberMax,
-        sender_user_id: senderUserId,
-        user_name: userName,
+        hp_value: hpValueNum,
+        hp_percent: hpPercent == null ? null : Number(hpPercent),
+        user_name: userName == null ? null : String(userName),
+        sender_user_id: senderUserId == null ? null : String(senderUserId),
+        member_current:
+          memberCurrent == null || memberCurrent === ""
+            ? null
+            : Number(memberCurrent),
+        member_max:
+          memberMax == null || memberMax === "" ? null : Number(memberMax),
         created_at: createdAt,
       },
     ]);
@@ -174,21 +209,29 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   try {
-    const url = new URL(req.url);
+    const { searchParams } = new URL(req.url);
+    const groupIdParam = searchParams.get("groupId") ?? searchParams.get("group_id");
 
-    const groupParam =
-      url.searchParams.get("group_id") ??
-      url.searchParams.get("groupId") ??
-      url.searchParams.get("group_name") ??
-      url.searchParams.get("groupName");
-
-    const matchedGroupId = await resolveGroupUuid(groupParam);
-    if (!matchedGroupId) {
-      return NextResponse.json({ error: "Invalid groupId / groupName" }, { status: 400 });
+    if (!groupIdParam) {
+      return NextResponse.json(
+        { error: "groupId is required" },
+        { status: 400 }
+      );
     }
 
-    const limitParam = url.searchParams.get("limit");
-    const limit = Math.min(Math.max(Number(limitParam ?? 200), 1), 1000);
+    const candidates = await resolveGroupUuidCandidates(String(groupIdParam));
+    const matchedGroupId =
+      candidates[0] ?? (isUuidLike(String(groupIdParam)) ? String(groupIdParam) : null);
+
+    if (!matchedGroupId) {
+      return NextResponse.json(
+        { error: "Group not found / cannot resolve UUID" },
+        { status: 404 }
+      );
+    }
+
+    const limitRaw = searchParams.get("limit");
+    const limit = limitRaw ? Math.min(Math.max(Number(limitRaw), 1), 200) : 50;
 
     const { data, error } = await sb
       .from("raids")
