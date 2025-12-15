@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-// ===== ユーティリティ: JST(+09:00) の ISO を作る（created_at をJSTで返したい用途） =====
+// ===== ユーティリティ: JST(+09:00) の ISO 文字列 =====
 function toJstIso(d: Date) {
   const z = new Date(d.getTime() + 9 * 60 * 60 * 1000);
   const yyyy = z.getUTCFullYear();
@@ -14,14 +14,31 @@ function toJstIso(d: Date) {
   return `${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}+09:00`;
 }
 
+function isUuidLike(s: string) {
+  // 厳密v4に寄せず「UUIDっぽい」判定（既存データの揺れ対策）
+  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(
+    s
+  );
+}
+
+function toNumberOrNull(v: any): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function toStringOrNull(v: any): string | null {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  return s === "" ? null : s;
+}
+
 // ===== 定数: 特殊ボスの判定 =====
 const ULT_BAHAMUT_NAME = "Lv200 アルティメットバハムート";
 
-// Lv200 アルティメットバハムートの「非表示」判定（hpValue <= threshold）
-// 通常: 70,000,000
-// 一部送信者のみ: 76,000,000
-const ULT_BAHAMUT_HP_THRESHOLD_DEFAULT = 70000000;
-const ULT_BAHAMUT_HP_THRESHOLD_SPECIAL = 76000000;
+// Lv200 アルティメットバハムートの「非表示」判定（hp_value <= threshold なら抑止）
+const ULT_BAHAMUT_HP_THRESHOLD_DEFAULT = 70_000_000;
+const ULT_BAHAMUT_HP_THRESHOLD_SPECIAL = 76_000_000;
 
 // 「一部ユーザーIDからの送信時のみ 7,600万へ引き上げ」対象
 const ULT_BAHAMUT_HP_THRESHOLD_SPECIAL_SENDERS = new Set<string>([
@@ -40,31 +57,30 @@ const sb = createClient(supabaseUrl, supabaseKey, {
   auth: { persistSession: false },
 });
 
-// ===== groupId を name / id どちらでも受けられるように “それっぽいカラム” を試して UUID を引く =====
-async function resolveGroupUuid(groupIdParam: string | null): Promise<string | null> {
-  if (!groupIdParam) return null;
+/**
+ * groupId(=UUID) / groupName(=文字列) を受け取り、groups.id(UUID) に解決する
+ * - UUIDっぽい → groups.id で照合
+ * - それ以外 → groups.name で照合
+ *
+ * ※動的カラム指定をしないので Type instantiation エラー回避
+ */
+async function resolveGroupUuid(groupParam: string | null): Promise<string | null> {
+  if (!groupParam) return null;
+  const p = String(groupParam).trim();
+  if (!p) return null;
 
-  const tryColumn = async (col: string) => {
-    try {
-      const { data, error } = await sb
-        .from("groups")
-        .select("id")
-        .eq(col as any, groupIdParam)
-        .limit(1);
-
-      if (!error && data && data[0]?.id) return String(data[0].id);
-    } catch {
-      // ignore
-    }
+  // 1) UUIDっぽい場合は id として照合（存在確認もする）
+  if (isUuidLike(p)) {
+    const { data, error } = await sb.from("groups").select("id").eq("id", p).limit(1);
+    if (!error && data && data[0]?.id) return String(data[0].id);
+    // もし groups に無いUUIDが来たら無効扱い
     return null;
-  };
-
-  // よくあるカラム名を順に試す
-  const cols = ["id", "group_id", "groupId", "name", "group_name", "groupName"];
-  for (const col of cols) {
-    const v = await tryColumn(col);
-    if (v) return v;
   }
+
+  // 2) 文字列は name として照合
+  const { data, error } = await sb.from("groups").select("id").eq("name", p).limit(1);
+  if (!error && data && data[0]?.id) return String(data[0].id);
+
   return null;
 }
 
@@ -72,124 +88,70 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
-    // 受け取り想定（既存仕様に合わせて柔軟に）
-    let {
-      group_id,
-      groupId,
-      group_name,
-      groupName,
-      raid_id,
-      raidId,
-      boss_name,
-      bossName,
-      battle_name,
-      battleName,
-      hp_value,
-      hpValue,
-      hp_percent,
-      hpPercent,
-      member_current,
-      memberCurrent,
-      member_max,
-      memberMax,
-      sender_user_id,
-      senderUserId,
-      user_name,
-      userName,
-    } = body ?? {};
+    // 柔軟に受け取り
+    const groupParam =
+      toStringOrNull(body?.group_id) ??
+      toStringOrNull(body?.groupId) ??
+      toStringOrNull(body?.group_name) ??
+      toStringOrNull(body?.groupName);
 
-    const groupIdParam =
-      group_id ?? groupId ?? group_name ?? groupName ?? null;
-
-    const matchedGroupId = await resolveGroupUuid(
-      groupIdParam == null ? null : String(groupIdParam)
-    );
-
+    const matchedGroupId = await resolveGroupUuid(groupParam);
     if (!matchedGroupId) {
-      return NextResponse.json(
-        { error: "Invalid groupId / groupName" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Invalid groupId / groupName" }, { status: 400 });
     }
 
-    const raidIdStr = raid_id ?? raidId;
-    if (!raidIdStr || String(raidIdStr).trim() === "") {
+    const raidId =
+      toStringOrNull(body?.raid_id) ?? toStringOrNull(body?.raidId);
+    if (!raidId) {
       return NextResponse.json({ error: "raid_id is required" }, { status: 400 });
     }
-    const raidIdNorm = String(raidIdStr).trim();
 
-    // created_at を JST ISO で保存したい場合（既存仕様に合わせて）
+    const bossName =
+      toStringOrNull(body?.boss_name) ?? toStringOrNull(body?.bossName);
+    const battleName =
+      toStringOrNull(body?.battle_name) ?? toStringOrNull(body?.battleName);
+
+    const hpValue = toNumberOrNull(body?.hp_value ?? body?.hpValue);
+    const hpPercent = toNumberOrNull(body?.hp_percent ?? body?.hpPercent);
+
+    const memberCurrent = toNumberOrNull(body?.member_current ?? body?.memberCurrent);
+    const memberMax = toNumberOrNull(body?.member_max ?? body?.memberMax);
+
+    const senderUserId =
+      toStringOrNull(body?.sender_user_id) ?? toStringOrNull(body?.senderUserId);
+    const userName =
+      toStringOrNull(body?.user_name) ?? toStringOrNull(body?.userName);
+
+    // created_at を JST ISO で保存
     const createdAt = toJstIso(new Date());
 
-    // 空文字を正規化
-    bossName =
-      bossName == null || String(bossName).trim() === ""
-        ? null
-        : String(bossName);
-    battleName =
-      battleName == null || String(battleName).trim() === ""
-        ? null
-        : String(battleName);
-
-    // hp_value / hp_percent を number 化（空なら null）
-    const hpValueNum =
-      hp_value ?? hpValue ?? null;
-    const hpValueParsed =
-      hpValueNum == null || hpValueNum === "" ? null : Number(hpValueNum);
-
-    const hpPercentNum =
-      hp_percent ?? hpPercent ?? null;
-    const hpPercentParsed =
-      hpPercentNum == null || hpPercentNum === "" ? null : Number(hpPercentNum);
-
-    const senderUserIdStr =
-      sender_user_id ?? senderUserId ?? null;
-    const senderUserIdNorm =
-      senderUserIdStr == null ? null : String(senderUserIdStr).trim();
-
-    const userNameStr = user_name ?? userName ?? null;
-    const userNameNorm =
-      userNameStr == null ? null : String(userNameStr);
-
-    const memberCurrentStr = member_current ?? memberCurrent ?? null;
-    const memberMaxStr = member_max ?? memberMax ?? null;
-
     // ===== Lv200 アルティメットバハムート: 非表示HPしきい値を一部送信者のみ 7,600万へ =====
-    const isUltBaha = bossName === ULT_BAHAMUT_NAME || battleName === ULT_BAHAMUT_NAME;
+    const isUltBaha =
+      bossName === ULT_BAHAMUT_NAME || battleName === ULT_BAHAMUT_NAME;
 
     const ultBahaThreshold =
-      senderUserIdNorm &&
-      ULT_BAHAMUT_HP_THRESHOLD_SPECIAL_SENDERS.has(senderUserIdNorm)
+      senderUserId && ULT_BAHAMUT_HP_THRESHOLD_SPECIAL_SENDERS.has(senderUserId)
         ? ULT_BAHAMUT_HP_THRESHOLD_SPECIAL
         : ULT_BAHAMUT_HP_THRESHOLD_DEFAULT;
 
-    if (
-      isUltBaha &&
-      hpValueParsed != null &&
-      !Number.isNaN(hpValueParsed) &&
-      hpValueParsed <= ultBahaThreshold
-    ) {
-      // INSERTしない（抑止）
+    if (isUltBaha && hpValue !== null && hpValue <= ultBahaThreshold) {
+      // INSERT しない（抑止）
       return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
     }
 
-    // INSERT（group_id は matchedGroupId(UUID) を入れる）
+    // INSERT
     const { error } = await sb.from("raids").insert([
       {
         group_id: matchedGroupId,
-        raid_id: raidIdNorm,
+        raid_id: raidId,
         boss_name: bossName,
         battle_name: battleName,
-        hp_value: hpValueParsed,
-        hp_percent: hpPercentParsed,
-        sender_user_id: senderUserIdNorm,
-        user_name: userNameNorm,
-        member_current:
-          memberCurrentStr == null || memberCurrentStr === ""
-            ? null
-            : Number(memberCurrentStr),
-        member_max:
-          memberMaxStr == null || memberMaxStr === "" ? null : Number(memberMaxStr),
+        hp_value: hpValue,
+        hp_percent: hpPercent,
+        member_current: memberCurrent,
+        member_max: memberMax,
+        sender_user_id: senderUserId,
+        user_name: userName,
         created_at: createdAt,
       },
     ]);
@@ -214,26 +176,19 @@ export async function GET(req: NextRequest) {
   try {
     const url = new URL(req.url);
 
-    const groupIdParam =
+    const groupParam =
       url.searchParams.get("group_id") ??
       url.searchParams.get("groupId") ??
       url.searchParams.get("group_name") ??
       url.searchParams.get("groupName");
 
-    const matchedGroupId = await resolveGroupUuid(groupIdParam);
-
+    const matchedGroupId = await resolveGroupUuid(groupParam);
     if (!matchedGroupId) {
-      return NextResponse.json(
-        { error: "Invalid groupId / groupName" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Invalid groupId / groupName" }, { status: 400 });
     }
 
     const limitParam = url.searchParams.get("limit");
-    const limit = Math.min(
-      Math.max(Number(limitParam ?? 200), 1),
-      1000
-    );
+    const limit = Math.min(Math.max(Number(limitParam ?? 200), 1), 1000);
 
     const { data, error } = await sb
       .from("raids")
