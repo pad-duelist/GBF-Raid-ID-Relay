@@ -12,7 +12,7 @@ import useBattleMapping, { normalizeKey } from "@/lib/useBattleMapping";
 type RaidRow = {
   id: string;
   group_id: string;
-  group_name?: string | null; // あっても使わない（互換のため）
+  group_name?: string | null;
   raid_id: string;
   boss_name: string | null;
   battle_name: string | null;
@@ -22,7 +22,7 @@ type RaidRow = {
   member_max: number | null;
   user_name: string | null;
   created_at: string;
-  sender_user_id?: string | null; // Realtime受信時の自分除外用（あってもなくてもOK）
+  sender_user_id?: string | null;
   series?: string | null;
 };
 
@@ -36,16 +36,13 @@ const COPIED_IDS_KEY = "gbf-copied-raid-ids";
 const MEMBER_MAX_FILTER_KEY = "gbf-raid-member-max-filter";
 
 function getPublicEnv(name: string): string | undefined {
-  // Next.js の client では process.env.NEXT_PUBLIC_* が埋め込まれます
   // eslint-disable-next-line no-process-env
   const v = process.env[name];
   return v && String(v).trim().length > 0 ? String(v) : undefined;
 }
 
 function createSupabaseBrowserClient(): SupabaseClient | null {
-  const url =
-    getPublicEnv("NEXT_PUBLIC_SUPABASE_URL") ||
-    getPublicEnv("SUPABASE_URL");
+  const url = getPublicEnv("NEXT_PUBLIC_SUPABASE_URL") || getPublicEnv("SUPABASE_URL");
 
   const anon =
     getPublicEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY") ||
@@ -61,10 +58,6 @@ function createSupabaseBrowserClient(): SupabaseClient | null {
   });
 }
 
-/**
- * ★ラッパー：アクセス判定だけを担当
- * Hook の順序が崩れないように、UI本体は別コンポーネントへ切り出す
- */
 export default function GroupPageClient({ groupId }: { groupId: string }) {
   const router = useRouter();
 
@@ -138,15 +131,9 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
     );
   }
 
-  // accessOk になったら UI本体へ（Hook順序が崩れない）
   return <GroupPageInner groupId={groupId} />;
 }
 
-/**
- * ★UI本体（Realtime対応）
- * - 初回は /api/raids で取得
- * - 以降は /api/raids?mode=channel で得たチャンネルを Realtime(broadcast)購読
- */
 function GroupPageInner({ groupId }: { groupId: string }) {
   const router = useRouter();
 
@@ -154,12 +141,12 @@ function GroupPageInner({ groupId }: { groupId: string }) {
   const [loading, setLoading] = useState(true);
   const [bossFilter, setBossFilter] = useState<string>("");
   const [seriesFilter, setSeriesFilter] = useState<string>("");
-  // ★参戦者数（現在）がこの人数以下のみ表示（""=無制限）
   const [memberMaxFilter, setMemberMaxFilter] = useState<number | null>(null);
 
   const [copyMessage, setCopyMessage] = useState<string | null>(null);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioUnlockedRef = useRef<boolean>(false);
 
   const [notifyEnabled, setNotifyEnabled] = useState<boolean>(true);
   const [notifyVolume, setNotifyVolume] = useState<number>(0.7);
@@ -193,10 +180,14 @@ function GroupPageInner({ groupId }: { groupId: string }) {
 
   const currentUserIdRef = useRef<string | null>(null);
 
-  // Supabase client / Realtime channel 管理
+  // ===== Supabase client / Realtime channel 管理 =====
   const sbRef = useRef<SupabaseClient | null>(null);
   const channelRef = useRef<any>(null);
   const subscribedGroupIdRef = useRef<string | null>(null);
+
+  // ★ Realtime 再接続管理
+  const reconnectAttemptRef = useRef<number>(0);
+  const reconnectTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -236,7 +227,6 @@ function GroupPageInner({ groupId }: { groupId: string }) {
       await navigator.clipboard.writeText(text);
       return true;
     } catch {
-      // フォールバック（古い環境など）
       try {
         const ta = document.createElement("textarea");
         ta.value = text;
@@ -254,14 +244,64 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     }
   }
 
+  // ★ 最初のユーザー操作で Audio を “アンロック”（バックグラウンドで鳴りやすくする）
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const unlock = async () => {
+      if (audioUnlockedRef.current) return;
+      if (!audioRef.current) audioRef.current = new Audio("/notify.mp3");
+
+      const a = audioRef.current;
+
+      // ほぼ無音で一度だけ play() を通す
+      const prevVol = a.volume;
+      const prevMuted = a.muted;
+
+      a.muted = true;
+      a.volume = 0;
+      a.currentTime = 0;
+
+      try {
+        await a.play();
+        a.pause();
+        a.currentTime = 0;
+        audioUnlockedRef.current = true;
+      } catch {
+        // ブラウザが拒否する場合があるが、次の操作で再トライされる
+      } finally {
+        a.muted = prevMuted;
+        a.volume = prevVol;
+      }
+    };
+
+    const onUserGesture = () => {
+      void unlock();
+    };
+
+    window.addEventListener("pointerdown", onUserGesture, { passive: true });
+    window.addEventListener("keydown", onUserGesture);
+
+    return () => {
+      window.removeEventListener("pointerdown", onUserGesture);
+      window.removeEventListener("keydown", onUserGesture);
+    };
+  }, []);
+
   const playNotifySound = useCallback(() => {
     if (!notifyEnabled) return;
-    if (!audioRef.current) audioRef.current = new Audio("/notify.mp3");
 
+    if (!audioRef.current) audioRef.current = new Audio("/notify.mp3");
     const audio = audioRef.current;
+
     audio.volume = notifyVolume;
     audio.currentTime = 0;
-    audio.play().catch(() => {});
+
+    // ※非アクティブでも鳴らしたい：visibility/focus では制限しない
+    audio.play().catch(() => {
+      // 自動再生制限に引っかかった場合は、ユーザーが一度でも操作すれば鳴るようになることが多い
+      // （音テストボタンやページクリックでアンロックされます）
+    });
   }, [notifyEnabled, notifyVolume]);
 
   const getDisplayName = useCallback((raid: RaidRow): string => {
@@ -289,7 +329,6 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     return { ...r, series: mergedSeries };
   }, []);
 
-  // battleMappingMap が更新されたら、既存リストの series を再計算（ポーリング無しでも表示が追従）
   useEffect(() => {
     setRaids((prev) => prev.map((r) => enrichSeries(r)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -317,9 +356,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
         query.set("excludeUserId", userId.trim());
       }
 
-      const res = await fetch(`/api/raids?${query.toString()}`, {
-        cache: "no-store",
-      });
+      const res = await fetch(`/api/raids?${query.toString()}`, { cache: "no-store" });
 
       if (!res.ok) {
         console.error("failed to fetch raids", res.status);
@@ -342,12 +379,10 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     }
   }, [enrichSeries, groupId]);
 
-  // fetchRaids をイベントハンドラから呼べるようにref同期
   useEffect(() => {
     fetchRaidsRef.current = fetchRaids;
   }, [fetchRaids]);
 
-  // 初回ロード（ポーリングはしない）
   useEffect(() => {
     setLoading(true);
     void fetchRaids();
@@ -384,7 +419,6 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     }
     if (savedAutoCopy !== null) setAutoCopyEnabled(savedAutoCopy === "true");
 
-    // ★参戦者数フィルタ復元（""/null = 無制限）
     if (savedMemberMax !== null) {
       const n = Number(savedMemberMax);
       if (!Number.isNaN(n) && n >= 2 && n <= 5) setMemberMaxFilter(n);
@@ -403,7 +437,6 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     );
   }, [notifyEnabled, notifyVolume, autoCopyEnabled, memberMaxFilter]);
 
-  // ref同期（イベントハンドラで最新値を参照するため）
   useEffect(() => {
     autoCopyEnabledRef.current = autoCopyEnabled;
   }, [autoCopyEnabled]);
@@ -426,12 +459,11 @@ function GroupPageInner({ groupId }: { groupId: string }) {
 
   const matchesMemberMax = (raid: RaidRow, max: number | null): boolean => {
     if (max == null) return true;
-    // 参戦者数が取れないものは判定不能なので表示（必要なら false に変更可能）
     if (raid.member_current == null) return true;
     return raid.member_current <= max;
   };
 
-  // ===== Realtime購読セットアップ =====
+  // ===== Realtime購読（自動再接続つき） =====
   const teardownRealtime = useCallback(async () => {
     try {
       const sb = sbRef.current;
@@ -444,8 +476,41 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     } finally {
       channelRef.current = null;
       subscribedGroupIdRef.current = null;
+
+      if (reconnectTimerRef.current != null) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      reconnectAttemptRef.current = 0;
     }
   }, []);
+
+  const scheduleReconnect = useCallback(
+    (reason?: string) => {
+      if (reconnectTimerRef.current != null) return;
+
+      const attempt = reconnectAttemptRef.current;
+      const delay = Math.min(30000, 1000 * Math.pow(2, attempt)); // 1s,2s,4s...最大30s
+      reconnectAttemptRef.current = Math.min(attempt + 1, 10);
+
+      reconnectTimerRef.current = window.setTimeout(() => {
+        reconnectTimerRef.current = null;
+        void setupRealtime();
+      }, delay);
+
+      if (reason) console.warn("scheduleReconnect:", reason, "delay(ms)=", delay);
+    },
+    // setupRealtime は下で定義されるが、useCallback 参照のため後方宣言が必要
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+
+  // scheduleReconnect が setupRealtime を参照できるように、後で差し替える（ref経由で安全に）
+  const setupRealtimeRef = useRef<() => Promise<void>>(async () => {});
+  useEffect(() => {
+    // scheduleReconnect内で呼ぶ setupRealtime を常に最新に保つ
+    (scheduleReconnect as any).setupRealtimeRef = setupRealtimeRef;
+  }, [scheduleReconnect]);
 
   const upsertIncomingRaid = useCallback(
     (incoming: RaidRow) => {
@@ -453,14 +518,11 @@ function GroupPageInner({ groupId }: { groupId: string }) {
       if (mine && incoming.sender_user_id && incoming.sender_user_id === mine) return;
 
       setRaids((prev) => {
-        // 重複排除
         if (prev.some((r) => r.id === incoming.id)) return prev;
 
         const enriched = enrichSeries(incoming);
-
         const next = [enriched, ...prev];
 
-        // created_at 降順に整列（念のため）
         next.sort((a, b) => {
           const ta = Date.parse(a.created_at);
           const tb = Date.parse(b.created_at);
@@ -468,7 +530,6 @@ function GroupPageInner({ groupId }: { groupId: string }) {
           return tb - ta;
         });
 
-        // 表示上限（従来のfetchと合わせて50件）
         return next.slice(0, 50);
       });
     },
@@ -478,24 +539,16 @@ function GroupPageInner({ groupId }: { groupId: string }) {
   const setupRealtime = useCallback(async () => {
     if (!groupId) return;
 
-    // supabase client 初期化（1回だけ）
-    if (!sbRef.current) {
-      sbRef.current = createSupabaseBrowserClient();
-    }
-
-    // client が作れないなら Realtimeは使えない（ただし画面は初回fetchで動く）
+    if (!sbRef.current) sbRef.current = createSupabaseBrowserClient();
     if (!sbRef.current) {
       console.warn("Supabase client not initialized (missing NEXT_PUBLIC_SUPABASE_* env).");
       return;
     }
 
-    // すでに同一groupで購読中なら何もしない
     if (subscribedGroupIdRef.current === groupId && channelRef.current) return;
 
-    // 既存購読は破棄
     await teardownRealtime();
 
-    // チャンネル名をサーバーから取得（membershipチェック済みのもの）
     let userId = currentUserIdRef.current?.trim() || "";
     if (!userId && typeof window !== "undefined") {
       userId = window.localStorage.getItem("extensionUserId")?.trim() || "";
@@ -515,6 +568,10 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     const res = await fetch(`/api/raids?${q.toString()}`, { cache: "no-store" });
     if (!res.ok) {
       console.error("failed to fetch realtime channel", res.status);
+      // チャンネル名取得に失敗＝一時的な可能性 → 再接続
+      if (typeof window !== "undefined") {
+        (scheduleReconnect as any).setupRealtimeRef?.current?.();
+      }
       return;
     }
 
@@ -522,38 +579,55 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     const channelName = json?.channel as string | undefined;
     if (!channelName) {
       console.error("channel name not returned");
+      if (typeof window !== "undefined") {
+        (scheduleReconnect as any).setupRealtimeRef?.current?.();
+      }
       return;
     }
 
     const sb = sbRef.current;
 
-    // broadcast購読
     const ch = sb
       .channel(channelName)
-      .on(
-        "broadcast",
-        { event: "raid" },
-        (payload: any) => {
-          // payload.payload に INSERTされた行が入る想定
-          const row = (payload as any)?.payload as RaidRow | undefined;
-          if (!row?.id) return;
-          if (!row.raid_id) return;
-          upsertIncomingRaid(row);
-        }
-      );
+      .on("broadcast", { event: "raid" }, (payload: any) => {
+        const row = (payload as any)?.payload as RaidRow | undefined;
+        if (!row?.id) return;
+        if (!row.raid_id) return;
+        upsertIncomingRaid(row);
+      });
 
     channelRef.current = ch;
     subscribedGroupIdRef.current = groupId;
 
     ch.subscribe((status: string) => {
-      // SUBSCRIBED / TIMED_OUT / CLOSED / CHANNEL_ERROR
       if (status === "SUBSCRIBED") {
-        // OK（表示は変えない：既存UI維持）
-      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-        console.warn("realtime subscribe failed:", status);
+        reconnectAttemptRef.current = 0;
+        return;
+      }
+
+      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+        console.warn("realtime status:", status);
+        void teardownRealtime();
+        // 再接続を予約（指数バックオフ）
+        if (typeof window !== "undefined") {
+          // scheduleReconnect は setupRealtimeRef 経由で最新を呼ぶ
+          if (reconnectTimerRef.current == null) {
+            const attempt = reconnectAttemptRef.current;
+            const delay = Math.min(30000, 1000 * Math.pow(2, attempt));
+            reconnectAttemptRef.current = Math.min(attempt + 1, 10);
+            reconnectTimerRef.current = window.setTimeout(() => {
+              reconnectTimerRef.current = null;
+              void setupRealtimeRef.current();
+            }, delay);
+          }
+        }
       }
     });
   }, [groupId, teardownRealtime, upsertIncomingRaid]);
+
+  useEffect(() => {
+    setupRealtimeRef.current = setupRealtime;
+  }, [setupRealtime]);
 
   useEffect(() => {
     let disposed = false;
@@ -573,7 +647,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     };
   }, [groupId, setupRealtime, teardownRealtime]);
 
-  // ===== タブ/ウィンドウ復帰時の「瞬間コピー」ロジック（既存維持） =====
+  // ===== タブ/ウィンドウ復帰時の「瞬間コピー」（既存：アクティブ時のみ） =====
   useEffect(() => {
     let disposed = false;
 
@@ -605,7 +679,6 @@ function GroupPageInner({ groupId }: { groupId: string }) {
 
       lastActiveCopiedRaidInternalIdRef.current = latest.id;
 
-      // UI反映（リング＆コピー済み＆メッセージ）
       setLastAutoCopiedRaidId(latest.id);
       addToCopied(latest.id);
       setCopyMessage(`ID ${latest.raid_id} をコピーしました`);
@@ -616,26 +689,21 @@ function GroupPageInner({ groupId }: { groupId: string }) {
 
     const copyLatestOnActive = async () => {
       if (disposed) return;
-
-      // 自動コピーOFFなら何もしない
       if (!autoCopyEnabledRef.current) return;
 
-      // 可視＆フォーカス時のみ
+      // ★コピーはアクティブ時のみ（要件通り）
       if (document.visibilityState !== "visible") return;
       if (!document.hasFocus()) return;
 
-      // 1) まず「今見えている filtered（ref）」から即コピー（fetch待ちなし）
       const immediateList = filteredRaidsRef.current;
       if (immediateList && immediateList.length > 0) {
         const latestNow = pickLatestByCreatedAt(immediateList);
         if (latestNow) {
           await doCopy(latestNow);
-          // 復帰タイミングで autoCopy effect が暴発しないよう抑止
           applySuppressForAutoCopyEffect(immediateList);
         }
       }
 
-      // 2) 次に最新取得（Realtime取りこぼし対策にもなる）：復帰時のみ
       fetchRaidsRef
         .current()
         .then(async (merged) => {
@@ -669,15 +737,22 @@ function GroupPageInner({ groupId }: { groupId: string }) {
 
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") void copyLatestOnActive();
+
+      // visibilityが変わったら Realtime が落ちていないか軽く再確認（音を鳴らす目的で常時受信したい）
+      if (channelRef.current == null) {
+        void setupRealtimeRef.current();
+      }
     };
     const onFocus = () => {
       void copyLatestOnActive();
+      if (channelRef.current == null) {
+        void setupRealtimeRef.current();
+      }
     };
 
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onFocus);
 
-    // 初回表示時も、すでにアクティブなら最新コピー
     void copyLatestOnActive();
 
     return () => {
@@ -685,10 +760,9 @@ function GroupPageInner({ groupId }: { groupId: string }) {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onFocus);
     };
-    // 既存同様：addToCopiedだけ依存（内部はrefで最新参照）
   }, [addToCopied, getDisplayName, matchesMemberMax]);
 
-  // ===== 通知音（新着検知）既存ロジック維持 =====
+  // ===== 通知音（新着検知）: 非アクティブでも鳴らしたいので制限しない =====
   useEffect(() => {
     if (!raids) return;
 
@@ -716,7 +790,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     if (hasMatch) playNotifySound();
   }, [raids, bossFilter, seriesFilter, memberMaxFilter, playNotifySound, getDisplayName]);
 
-  // ===== 自動コピー（filteredに新規が入った瞬間）既存ロジック維持 =====
+  // ===== 自動コピー（filteredに新規が入った瞬間）既存維持（ただしコピー自体はブラウザ制限があるので、実際には可視時のみ動くことが多い） =====
   const filteredRaids = raids.filter((raid) => {
     const matchBoss = bossFilter ? getDisplayName(raid) === bossFilter : true;
     const raidSeries = (raid.series ?? "").toString().trim();
@@ -756,6 +830,10 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     if (newlyAdded.length > 0) {
       const target = newlyAdded[0];
       (async () => {
+        // ★コピーは「可視＋フォーカス時」のみ（要件通り）
+        if (document.visibilityState !== "visible") return;
+        if (!document.hasFocus()) return;
+
         const ok = await writeClipboard(target.raid_id);
         if (!ok) {
           console.error("自動コピーに失敗しました: clipboard write failed");
@@ -794,11 +872,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
   };
 
   const uniqueBosses = Array.from(
-    new Set(
-      raids
-        .map((r) => getDisplayName(r))
-        .filter((v) => v && v !== "不明なマルチ")
-    )
+    new Set(raids.map((r) => getDisplayName(r)).filter((v) => v && v !== "不明なマルチ"))
   );
 
   const seriesCountMap = raids.reduce<Record<string, number>>((acc, r) => {
@@ -854,7 +928,6 @@ function GroupPageInner({ groupId }: { groupId: string }) {
                 </select>
               </div>
 
-              {/* ★参戦者数フィルタ（現在人数がN以下） */}
               <div className="flex flex-col">
                 <label className="text-xs sm:text-sm text-slate-300 mb-1">参戦者数</label>
                 <select
@@ -934,7 +1007,6 @@ function GroupPageInner({ groupId }: { groupId: string }) {
                 <span>自動コピー</span>
               </label>
 
-              {/* 任意：手動更新（Realtimeが瞬断した時の保険として有用。既存UXを壊さず追加） */}
               <button
                 type="button"
                 onClick={() => {
