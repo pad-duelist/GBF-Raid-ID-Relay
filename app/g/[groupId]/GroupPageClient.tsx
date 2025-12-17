@@ -43,16 +43,14 @@ function getPublicEnv(name: string): string | undefined {
 }
 
 function createSupabaseBrowserClient(): SupabaseClient | null {
-  const url =
-    getPublicEnv("NEXT_PUBLIC_SUPABASE_URL") ||
-    getPublicEnv("SUPABASE_URL");
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
 
+  // 互換で別名も許すなら「直書き」で列挙（動的参照はしない）
   const anon =
-    getPublicEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY") ||
-    getPublicEnv("NEXT_PUBLIC_SUPABASE_ANON") ||
-    getPublicEnv("SUPABASE_ANON_KEY") ||
-    getPublicEnv("SUPABASE_ANON");
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON?.trim();
 
+  // ※ クライアントでは SUPABASE_URL / SUPABASE_ANON_*（NEXT_PUBLICなし）は読めないので削除推奨
   if (!url || !anon) return null;
 
   return createClient(url, anon, {
