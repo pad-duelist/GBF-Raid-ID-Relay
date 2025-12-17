@@ -1,6 +1,7 @@
 // app/api/raids/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import crypto from "crypto";
 
 export const dynamic = "force-dynamic";
 
@@ -9,17 +10,55 @@ const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: { persistSession: false },
 });
-const sb: any = supabase; // ★型推論を止める（Vercelビルド安定化）
+const sb: any = supabase; // ★ビルドの型深掘り回避
 
-// ===== created_at を日本時間(JST)のISO(+09:00)に差し替える補助 =====
-// DBの created_at(timestamptz) はUTCで保存し、API返却時にJST(+09:00)のISO文字列へ変換して返す。
-// 例: 2025-12-14T11:22:33.000Z -> 2025-12-14T20:22:33+09:00
+// ===== Realtime broadcast 用チャンネル名（推測されにくいように secret で署名） =====
+const REALTIME_CHANNEL_SECRET = process.env.REALTIME_CHANNEL_SECRET || "";
+
+function realtimeChannelNameForGroup(groupUuid: string): string {
+  if (!REALTIME_CHANNEL_SECRET) return `raids:${groupUuid}`;
+
+  const sig = crypto
+    .createHmac("sha256", REALTIME_CHANNEL_SECRET)
+    .update(groupUuid)
+    .digest("hex")
+    .slice(0, 16);
+
+  return `raids:${groupUuid}:${sig}`;
+}
+
+async function broadcastRaid(channelName: string, payload: any) {
+  try {
+    const ch = sb.channel(channelName);
+
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(() => resolve(), 1200);
+      ch.subscribe((status: string) => {
+        if (status === "SUBSCRIBED") {
+          clearTimeout(t);
+          resolve();
+        }
+      });
+    });
+
+    await ch.send({
+      type: "broadcast",
+      event: "raid",
+      payload,
+    });
+
+    await sb.removeChannel(ch);
+  } catch (e) {
+    console.error("[realtime broadcast] failed:", e);
+  }
+}
+
+// ===== created_at を日本時間(JST)のISO(+09:00)に差し替える（返却・配信用） =====
 function toJstIsoString(iso: string | null | undefined): string | null {
   if (!iso) return null;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
 
-  // JSTでの各パーツを取り出す
   const parts = new Intl.DateTimeFormat("sv-SE", {
     timeZone: "Asia/Tokyo",
     year: "numeric",
@@ -44,7 +83,7 @@ function toJstIsoString(iso: string | null | undefined): string | null {
 
 // ===== 定数: 特殊ボスの判定 =====
 const ULT_BAHAMUT_NAME = "Lv200 アルティメットバハムート";
-const ULT_BAHAMUT_HP_THRESHOLD = 70000000; // 70,000,000
+const ULT_BAHAMUT_HP_THRESHOLD = 70000000;
 
 // ===== groupId 解決（Apoklisi -> UUID） =====
 function isUuidLike(s: string) {
@@ -56,14 +95,11 @@ function isUuidLike(s: string) {
 async function resolveGroupUuidCandidates(groupIdParam: string): Promise<string[]> {
   const candidates = new Set<string>();
 
-  // 既にUUIDならそれを使う
   if (isUuidLike(groupIdParam)) {
     candidates.add(groupIdParam);
     return Array.from(candidates);
   }
 
-  // UUIDでない場合は groups テーブルから解決を試す
-  // ※ 動的カラム指定を避ける（slug/name/group_name を固定で試す）
   try {
     const r = await sb.from("groups").select("id").eq("slug", groupIdParam).limit(10);
     if (!r.error && r.data?.length) {
@@ -72,9 +108,7 @@ async function resolveGroupUuidCandidates(groupIdParam: string): Promise<string[
         if (id && isUuidLike(id)) candidates.add(id);
       }
     }
-  } catch {
-    // ignore
-  }
+  } catch {}
 
   try {
     const r = await sb.from("groups").select("id").eq("name", groupIdParam).limit(10);
@@ -84,9 +118,7 @@ async function resolveGroupUuidCandidates(groupIdParam: string): Promise<string[
         if (id && isUuidLike(id)) candidates.add(id);
       }
     }
-  } catch {
-    // ignore
-  }
+  } catch {}
 
   try {
     const r = await sb.from("groups").select("id").eq("group_name", groupIdParam).limit(10);
@@ -96,9 +128,7 @@ async function resolveGroupUuidCandidates(groupIdParam: string): Promise<string[
         if (id && isUuidLike(id)) candidates.add(id);
       }
     }
-  } catch {
-    // ignore
-  }
+  } catch {}
 
   return Array.from(candidates);
 }
@@ -149,7 +179,7 @@ const BOSS_BLOCKLIST_CSV_URL =
 
 let bossBlockList: Set<string> | null = null;
 let lastBossBlockListFetched = 0;
-const BOSS_BLOCKLIST_TTL = 5 * 60 * 1000; // 5分
+const BOSS_BLOCKLIST_TTL = 5 * 60 * 1000;
 
 function normalizeBossName(name: string): string {
   return name.trim();
@@ -209,7 +239,7 @@ const BOSS_MAP_CSV_URL =
 
 let bossMapCache: { map: Record<string, string>; sortedKeys: string[] } | null = null;
 let lastBossMapFetched = 0;
-const BOSS_MAP_TTL = 5 * 60 * 1000; // 5分
+const BOSS_MAP_TTL = 5 * 60 * 1000;
 
 function toHalfwidthAndLower(s: string) {
   return (s || "")
@@ -304,16 +334,13 @@ async function mapNormalize(name: string | null | undefined): Promise<string | n
   return raw;
 }
 
-// ===== 参戦者数抑制（復活） =====
+// ===== 参戦者数抑制 =====
 function toIntOrNull(v: any): number | null {
   if (v === null || v === undefined) return null;
   const n = typeof v === "number" ? v : Number(String(v).trim());
   return Number.isFinite(n) ? Math.trunc(n) : null;
 }
 
-// - 6/6 を非表示
-// - 18人マルチは 10/18 以上を非表示
-// - 30人マルチは 10/30 以上を非表示
 function shouldSuppressByMembers(memberCurrent: any, memberMax: any): boolean {
   const cur = toIntOrNull(memberCurrent);
   const max = toIntOrNull(memberMax);
@@ -325,7 +352,7 @@ function shouldSuppressByMembers(memberCurrent: any, memberMax: any): boolean {
   return false;
 }
 
-// ===== GET: 一覧取得 =====
+// ===== GET =====
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
 
@@ -333,18 +360,17 @@ export async function GET(req: NextRequest) {
   const bossNameParam = searchParams.get("bossName");
   const limitParam = searchParams.get("limit");
   const excludeUserId = searchParams.get("excludeUserId");
+  const mode = searchParams.get("mode"); // mode=channel
 
   if (!groupIdParam) {
     return NextResponse.json({ error: "groupId is required" }, { status: 400 });
   }
 
-  // 呼び出し元ユーザーID（現状フロントが excludeUserId を送っている前提）
   const callerUserId = searchParams.get("userId") || excludeUserId;
   if (!callerUserId) {
     return NextResponse.json({ error: "userId is required" }, { status: 401 });
   }
 
-  // 所属チェック + matchedGroupId(UUID) を確定
   const mem = await findMembershipMatchedGroupId({
     groupIdParam,
     userId: callerUserId,
@@ -359,6 +385,12 @@ export async function GET(req: NextRequest) {
 
   const matchedGroupId = mem.matchedGroupId;
 
+  // チャンネル名のみ返す
+  if (mode === "channel") {
+    const channel = realtimeChannelNameForGroup(matchedGroupId);
+    return NextResponse.json({ channel, matchedGroupId }, { status: 200 });
+  }
+
   try {
     let query = sb
       .from("raids")
@@ -366,6 +398,7 @@ export async function GET(req: NextRequest) {
         [
           "id",
           "group_id",
+          "group_name",
           "raid_id",
           "boss_name",
           "battle_name",
@@ -402,12 +435,10 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    // 参戦者数抑制（一覧取得でも除外して返す）
     const filtered = (data ?? []).filter(
       (r: any) => !shouldSuppressByMembers(r?.member_current, r?.member_max)
     );
 
-    // created_at をJSTのISO(+09:00)へ差し替えて返す
     const rows = filtered.map((r: any) => ({
       ...r,
       created_at: toJstIsoString(r?.created_at),
@@ -420,7 +451,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// ===== POST: 1件登録 =====
+// ===== POST =====
 export async function POST(req: NextRequest) {
   try {
     const contentType = req.headers.get("content-type") || "";
@@ -438,6 +469,7 @@ export async function POST(req: NextRequest) {
     const groupIdParam = body.groupId ?? body.group_id;
     const raidId = body.raidId ?? body.raid_id;
 
+    // 送信仕様が固定：boss_name が基本、battle_name は来ないなら NULL のまま
     let bossName = body.bossName ?? body.boss_name;
     let battleName = body.battleName ?? body.battle_name;
 
@@ -447,19 +479,19 @@ export async function POST(req: NextRequest) {
     const userName = body.userName ?? body.user_name;
     const senderUserId = body.senderUserId ?? body.sender_user_id;
 
-    // 参戦者数
     const memberCurrent = body.memberCurrent ?? body.member_current ?? null;
     const memberMax = body.memberMax ?? body.member_max ?? null;
+
+    // group_name は「送られてくる値をそのまま使う」方針（無ければフォールバック）
+    const groupNameRaw = body.groupName ?? body.group_name ?? null;
 
     if (!groupIdParam || !raidId) {
       return NextResponse.json({ error: "groupId and raidId are required" }, { status: 400 });
     }
-
     if (!senderUserId) {
       return NextResponse.json({ error: "senderUserId is required" }, { status: 401 });
     }
 
-    // 所属チェック + matchedGroupId(UUID) を確定
     const mem = await findMembershipMatchedGroupId({
       groupIdParam,
       userId: senderUserId,
@@ -474,25 +506,29 @@ export async function POST(req: NextRequest) {
 
     const matchedGroupId = mem.matchedGroupId;
 
-    // bossName / battleName をCSVマッピングで正規化
+    // ★group_name の保存値（固定仕様に合わせ、サーバー側で勝手に変えない）
+    const groupNameForRow =
+      (groupNameRaw && String(groupNameRaw).trim().length > 0
+        ? String(groupNameRaw).trim()
+        : String(groupIdParam).trim()) || String(groupIdParam);
+
+    // ボス名マッピング（必要なら）
     bossName = await mapNormalize(bossName);
     battleName = await mapNormalize(battleName);
 
-    // ブロックリスト
+    // ブロック判定
     const bossBlocked = await isBossBlocked(bossName);
     const battleBlocked = await isBossBlocked(battleName);
     if (bossBlocked || battleBlocked) {
       return NextResponse.json({ ok: true, blocked: true }, { status: 200 });
     }
 
-    // 参戦者数抑制（復活）
+    // 参戦者数抑制
     if (shouldSuppressByMembers(memberCurrent, memberMax)) {
       return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
     }
 
-    // アルバハ200（表示条件を「7000万超のみ通す」に変更）
-    //  - 表示: 70,000,000 より上（7000万↑）
-    //  - 非表示: 70,000,000 以下（7000万以下）
+    // アルバハ200のHP抑制（既存仕様）
     const hpValueNum = hpValue == null ? null : Number(hpValue);
     const isUltBaha = bossName === ULT_BAHAMUT_NAME || battleName === ULT_BAHAMUT_NAME;
 
@@ -505,26 +541,59 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
     }
 
-    // INSERT（group_id は matchedGroupId(UUID) を入れる）
-    const { error } = await sb.from("raids").insert([
-      {
-        group_id: matchedGroupId,
-        raid_id: raidId,
-        boss_name: bossName ?? null,
-        battle_name: battleName ?? null,
-        hp_value: hpValue == null ? null : Number(hpValue),
-        hp_percent: hpPercent == null ? null : Number(hpPercent),
-        member_current: memberCurrent == null ? null : Number(memberCurrent),
-        member_max: memberMax == null ? null : Number(memberMax),
-        user_name: userName ?? null,
-        sender_user_id: senderUserId,
-      },
-    ]);
+    // ★重要：canonical_boss_name は「書かない」方針（NULLのまま運用）
+    const { data: inserted, error } = await sb
+      .from("raids")
+      .insert([
+        {
+          group_id: matchedGroupId,
+          group_name: groupNameForRow,
+          raid_id: raidId,
+
+          boss_name: bossName ?? null,
+          battle_name: battleName ?? null,
+
+          hp_value: hpValue == null ? null : Number(hpValue),
+          hp_percent: hpPercent == null ? null : Number(hpPercent),
+
+          member_current: memberCurrent == null ? null : Number(memberCurrent),
+          member_max: memberMax == null ? null : Number(memberMax),
+
+          user_name: userName ?? null,
+          sender_user_id: senderUserId,
+        },
+      ])
+      .select(
+        [
+          "id",
+          "group_id",
+          "group_name",
+          "raid_id",
+          "boss_name",
+          "battle_name",
+          "hp_value",
+          "hp_percent",
+          "member_current",
+          "member_max",
+          "user_name",
+          "created_at",
+          "sender_user_id",
+        ].join(",")
+      )
+      .single();
 
     if (error) {
       console.error("[POST /api/raids] supabase error:", error);
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
+
+    const payload = {
+      ...inserted,
+      created_at: toJstIsoString((inserted as any)?.created_at),
+    };
+
+    const channelName = realtimeChannelNameForGroup(matchedGroupId);
+    void broadcastRaid(channelName, payload);
 
     return NextResponse.json({ ok: true }, { status: 200 });
   } catch (e) {
