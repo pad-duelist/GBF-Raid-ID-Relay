@@ -3,7 +3,8 @@
 
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { supabaseBrowser } from "@/lib/supabase/browser";
 import { formatTimeAgo } from "@/lib/timeAgo";
 import { formatNumberWithComma } from "@/lib/numberFormat";
 import { useBattleNameMap } from "@/lib/useBattleNameMap";
@@ -34,42 +35,6 @@ const NOTIFY_VOLUME_KEY = "gbf-raid-notify-volume";
 const AUTO_COPY_ENABLED_KEY = "gbf-raid-auto-copy-enabled";
 const COPIED_IDS_KEY = "gbf-copied-raid-ids";
 const MEMBER_MAX_FILTER_KEY = "gbf-raid-member-max-filter";
-
-/**
- * Supabase browser client を singleton 化（GoTrueClient 警告を抑える）
- * - ページ内/Hot Reload/StrictMode 等で複数生成されるのを避ける
- */
-function getSupabaseBrowserClient(): SupabaseClient | null {
-  if (typeof window === "undefined") return null;
-
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-  const anon =
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON?.trim();
-
-  if (!url || !anon) return null;
-
-  const g = globalThis as unknown as {
-    __gbf_supabase__?: SupabaseClient;
-    __gbf_supabase_key__?: string;
-  };
-
-  const key = `${url}|${anon.slice(0, 12)}`;
-
-  if (g.__gbf_supabase__ && g.__gbf_supabase_key__ === key) {
-    return g.__gbf_supabase__;
-  }
-
-  const client = createClient(url, anon, {
-    auth: { persistSession: true, autoRefreshToken: true },
-    realtime: { params: { eventsPerSecond: 10 } },
-  });
-
-  g.__gbf_supabase__ = client;
-  g.__gbf_supabase_key__ = key;
-
-  return client;
-}
 
 /**
  * ★ラッパー：アクセス判定だけを担当
@@ -141,7 +106,7 @@ export default function GroupPageClient({ groupId }: { groupId: string }) {
         <div className="max-w-3xl mx-auto space-y-2">
           <div className="text-lg font-bold">GBF Raid ID Relay</div>
           <div className="text-sm text-slate-300">グループ: {groupId}</div>
-          <div className="text-sm">{accessChecking ? "権限確認中..." : "アクセス不可"}</div>
+          <div className="text-sm">{accessChecking ? "権限確認中." : "アクセス不可"}</div>
           {accessErrorText && <div className="text-xs text-slate-400">{accessErrorText}</div>}
         </div>
       </div>
@@ -208,27 +173,6 @@ function GroupPageInner({ groupId }: { groupId: string }) {
   const channelRef = useRef<any>(null);
   const subscribedGroupIdRef = useRef<string | null>(null);
 
-  // ===== クリップボード自動コピーの失敗を減らすため「直近のユーザー操作」を記録 =====
-  const lastUserGestureAtRef = useRef<number>(0);
-  const markUserGesture = useCallback(() => {
-    lastUserGestureAtRef.current = Date.now();
-  }, []);
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const onPointer = () => markUserGesture();
-    const onKey = () => markUserGesture();
-
-    // capture で早めに拾う（ボタン/リストクリック等）
-    window.addEventListener("pointerdown", onPointer, { capture: true });
-    window.addEventListener("keydown", onKey, { capture: true });
-
-    return () => {
-      window.removeEventListener("pointerdown", onPointer, { capture: true } as any);
-      window.removeEventListener("keydown", onKey, { capture: true } as any);
-    };
-  }, [markUserGesture]);
-
   useEffect(() => {
     if (typeof window === "undefined") return;
     currentUserIdRef.current = window.localStorage.getItem("extensionUserId");
@@ -260,29 +204,6 @@ function GroupPageInner({ groupId }: { groupId: string }) {
       }
       return next;
     });
-  }, []);
-
-  const canAttemptAutoClipboard = useCallback(async (): Promise<boolean> => {
-    if (typeof window === "undefined") return false;
-    if (!window.isSecureContext) return false;
-    if (document.visibilityState !== "visible") return false;
-    if (!document.hasFocus()) return false;
-
-    // 直近にページ内でユーザー操作があった時だけ試す（失敗ログを抑える）
-    const ms = Date.now() - (lastUserGestureAtRef.current || 0);
-    if (ms > 15000) return false;
-
-    // permissions が取れる環境ならチェック（取れない環境は無視）
-    try {
-      if ("permissions" in navigator && (navigator.permissions as any)?.query) {
-        const st = await navigator.permissions.query({ name: "clipboard-write" as PermissionName });
-        if (st.state === "denied") return false;
-      }
-    } catch {
-      // noop
-    }
-
-    return true;
   }, []);
 
   async function writeClipboard(text: string) {
@@ -408,8 +329,6 @@ function GroupPageInner({ groupId }: { groupId: string }) {
   }, [groupId, fetchRaids]);
 
   async function copyId(text: string, internalId?: string) {
-    // 手動クリックはユーザー操作なのでここで mark
-    markUserGesture();
     try {
       const ok = await writeClipboard(text);
       if (!ok) return;
@@ -534,15 +453,9 @@ function GroupPageInner({ groupId }: { groupId: string }) {
   const setupRealtime = useCallback(async () => {
     if (!groupId) return;
 
-    // supabase client 初期化（singleton）
+    // supabase client 初期化（1回だけ）
     if (!sbRef.current) {
-      sbRef.current = getSupabaseBrowserClient();
-    }
-
-    // client が作れないなら Realtimeは使えない（ただし画面は初回fetchで動く）
-    if (!sbRef.current) {
-      console.warn("Supabase client not initialized (missing NEXT_PUBLIC_SUPABASE_* env).");
-      return;
+      sbRef.current = supabaseBrowser;
     }
 
     // すでに同一groupで購読中なら何もしない
@@ -587,6 +500,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     const ch = sb
       .channel(channelName)
       .on("broadcast", { event: "raid" }, (payload: any) => {
+        // payload.payload に INSERTされた行が入る想定
         const row = (payload as any)?.payload as RaidRow | undefined;
         if (!row?.id) return;
         if (!row.raid_id) return;
@@ -597,8 +511,9 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     subscribedGroupIdRef.current = groupId;
 
     ch.subscribe((status: string) => {
+      // SUBSCRIBED / TIMED_OUT / CLOSED / CHANNEL_ERROR
       if (status === "SUBSCRIBED") {
-        // OK
+        // OK（表示は変えない：既存UI維持）
       } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
         console.warn("realtime subscribe failed:", status);
       }
@@ -623,7 +538,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     };
   }, [groupId, setupRealtime, teardownRealtime]);
 
-  // ===== タブ/ウィンドウ復帰時の「瞬間コピー」ロジック（失敗ログを出さない） =====
+  // ===== タブ/ウィンドウ復帰時の「瞬間コピー」ロジック（既存維持） =====
   useEffect(() => {
     let disposed = false;
 
@@ -632,149 +547,68 @@ function GroupPageInner({ groupId }: { groupId: string }) {
       return list.reduce((a, b) => {
         const ta = Date.parse(a.created_at);
         const tb = Date.parse(b.created_at);
-        if (Number.isNaN(ta) || Number.isNaN(tb)) return a;
+        if (Number.isNaN(ta)) return b;
+        if (Number.isNaN(tb)) return a;
         return tb > ta ? b : a;
       });
     };
 
-    const applySuppressForAutoCopyEffect = (list: RaidRow[]) => {
-      const bf = bossFilterRef.current;
-      const sf = seriesFilterRef.current;
-      const mf = memberMaxFilterRef.current;
-      prevFilterRef.current = `${bf}|${sf}|${mf ?? ""}`;
-      autoCopyInitializedRef.current = true;
-      seenFilteredRaidIdsRef.current = new Set(list.map((r) => r.id));
-    };
+    const tryAutoCopyOnFocus = async () => {
+      if (disposed) return;
+      if (!autoCopyEnabledRef.current) return;
 
-    const doCopy = async (latest: RaidRow) => {
-      if (!latest?.raid_id) return false;
-      if (lastActiveCopiedRaidInternalIdRef.current === latest.id) return false;
+      const list = filteredRaidsRef.current || [];
+      const latest = pickLatestByCreatedAt(list);
+      if (!latest?.id) return;
 
-      // ここが重要：自動コピーを“試すべき状況”でないなら、失敗させずに終了
-      const okToTry = await canAttemptAutoClipboard();
-      if (!okToTry) {
-        // うるさくしない（必要ならメッセージだけ出す）
-        return false;
-      }
+      // 同じものを連続コピーしない
+      if (lastActiveCopiedRaidInternalIdRef.current === latest.id) return;
 
       const ok = await writeClipboard(latest.raid_id);
-      if (!ok) return false;
+      if (!ok) return;
 
       lastActiveCopiedRaidInternalIdRef.current = latest.id;
-
       setLastAutoCopiedRaidId(latest.id);
       addToCopied(latest.id);
       setCopyMessage(`ID ${latest.raid_id} をコピーしました`);
       setTimeout(() => setCopyMessage(null), 1500);
-
-      return true;
     };
 
-    const copyLatestOnActive = async () => {
-      if (disposed) return;
-
-      if (!autoCopyEnabledRef.current) return;
-
-      if (document.visibilityState !== "visible") return;
-      if (!document.hasFocus()) return;
-
-      // 1) まず手元の表示から
-      const immediateList = filteredRaidsRef.current;
-      if (immediateList && immediateList.length > 0) {
-        const latestNow = pickLatestByCreatedAt(immediateList);
-        if (latestNow) {
-          await doCopy(latestNow);
-          applySuppressForAutoCopyEffect(immediateList);
-        }
+    const onVisibility = () => {
+      if (typeof document === "undefined") return;
+      if (document.visibilityState === "visible") {
+        void tryAutoCopyOnFocus();
       }
-
-      // 2) 次に最新取得（Realtime取りこぼし保険）
-      fetchRaidsRef
-        .current()
-        .then(async (merged) => {
-          if (disposed) return;
-          if (!merged || merged.length === 0) return;
-
-          if (document.visibilityState !== "visible") return;
-          if (!document.hasFocus()) return;
-
-          const bf = bossFilterRef.current;
-          const sf = seriesFilterRef.current;
-          const mf = memberMaxFilterRef.current;
-
-          const list = merged.filter((r) => {
-            const matchBoss = bf ? getDisplayName(r) === bf : true;
-            const raidSeries = (r.series ?? "").toString().trim();
-            const matchSeries = sf ? raidSeries === sf : true;
-            const matchMember = matchesMemberMax(r, mf);
-            return matchBoss && matchSeries && matchMember;
-          });
-          if (!list || list.length === 0) return;
-
-          const latestFetched = pickLatestByCreatedAt(list);
-          if (!latestFetched) return;
-
-          await doCopy(latestFetched);
-          applySuppressForAutoCopyEffect(list);
-        })
-        .catch(() => {});
     };
 
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") void copyLatestOnActive();
-    };
     const onFocus = () => {
-      // フォーカス復帰はだいたいユーザー操作なので、記録だけ更新（失敗率を下げる）
-      markUserGesture();
-      void copyLatestOnActive();
+      void tryAutoCopyOnFocus();
     };
 
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener("focus", onFocus);
-
-    void copyLatestOnActive();
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibility);
+      window.addEventListener("focus", onFocus);
+    }
 
     return () => {
       disposed = true;
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener("focus", onFocus);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibility);
+        window.removeEventListener("focus", onFocus);
+      }
     };
-  }, [addToCopied, canAttemptAutoClipboard, getDisplayName, markUserGesture]);
+  }, [addToCopied]);
 
-  // ===== 通知音（新着検知）既存ロジック維持 =====
-  useEffect(() => {
-    if (!raids) return;
-
-    const currentIdsSet = new Set(raids.map((r) => r.id));
-    const prev = prevAllIdsRef.current;
-
-    if (prev.size === 0) {
-      prevAllIdsRef.current = currentIdsSet;
-      return;
-    }
-
-    const newIds = raids.filter((r) => !prev.has(r.id));
-    prevAllIdsRef.current = currentIdsSet;
-
-    if (newIds.length === 0) return;
-
-    const hasMatch = newIds.some((r) => {
-      const matchBoss = bossFilter ? getDisplayName(r) === bossFilter : true;
-      const raidSeries = (r.series ?? "").toString().trim();
-      const matchSeries = seriesFilter ? raidSeries === seriesFilter : true;
-      const matchMember = matchesMemberMax(r, memberMaxFilter);
-      return matchBoss && matchSeries && matchMember;
-    });
-
-    if (hasMatch) playNotifySound();
-  }, [raids, bossFilter, seriesFilter, memberMaxFilter, playNotifySound, getDisplayName]);
-
-  // ===== 自動コピー（filteredに新規が入った瞬間） =====
+  // ===== フィルタ＆表示用 =====
   const filteredRaids = raids.filter((raid) => {
-    const matchBoss = bossFilter ? getDisplayName(raid) === bossFilter : true;
+    const displayName = getDisplayName(raid);
+    const matchBoss = bossFilter ? displayName === bossFilter : true;
+
     const raidSeries = (raid.series ?? "").toString().trim();
     const matchSeries = seriesFilter ? raidSeries === seriesFilter : true;
+
     const matchMember = matchesMemberMax(raid, memberMaxFilter);
+
     return matchBoss && matchSeries && matchMember;
   });
 
@@ -804,36 +638,32 @@ function GroupPageInner({ groupId }: { groupId: string }) {
       return;
     }
 
+    // 自動コピーは「このタブが前面」のときだけ実行（ブラウザの制限で失敗しやすいため）
+    if (typeof document !== "undefined") {
+      if (document.visibilityState !== "visible" || !document.hasFocus()) {
+        seenFilteredRaidIdsRef.current = currentIds;
+        return;
+      }
+    }
+
     const newlyAdded = filteredRaids.filter((raid) => !seenFilteredRaidIdsRef.current.has(raid.id));
 
     if (newlyAdded.length > 0) {
       const target = newlyAdded[0];
-
       (async () => {
-        // ここが重要：無理な状況では試さない（エラーを出さない）
-        const okToTry = await canAttemptAutoClipboard();
-        if (!okToTry) return;
-
         const ok = await writeClipboard(target.raid_id);
-        if (!ok) return;
-
+        if (!ok) {
+          return;
+        }
         setLastAutoCopiedRaidId(target.id);
         addToCopied(target.id);
         setCopyMessage(`ID ${target.raid_id} をコピーしました`);
         setTimeout(() => setCopyMessage(null), 1500);
-      })().catch(() => {});
+      })().catch((err) => console.error("自動コピーに失敗しました:", err));
     }
 
     seenFilteredRaidIdsRef.current = currentIds;
-  }, [
-    filteredRaids,
-    bossFilter,
-    seriesFilter,
-    memberMaxFilter,
-    autoCopyEnabled,
-    addToCopied,
-    canAttemptAutoClipboard,
-  ]);
+  }, [filteredRaids, bossFilter, seriesFilter, memberMaxFilter, autoCopyEnabled, addToCopied]);
 
   const normalizePercent = (raw: number | null | undefined): number | null => {
     if (raw == null) return null;
@@ -945,10 +775,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
               <div className="flex items-end gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    markUserGesture();
-                    playNotifySound();
-                  }}
+                  onClick={() => playNotifySound()}
                   className="bg-slate-700 hover:bg-slate-600 text-xs px-2 py-1 rounded h-9 flex items-center min-w-[48px] whitespace-nowrap"
                 >
                   音テスト
@@ -956,10 +783,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
 
                 <button
                   type="button"
-                  onClick={() => {
-                    markUserGesture();
-                    router.push(`/raids/rankings?groupId=${groupId}`);
-                  }}
+                  onClick={() => router.push(`/raids/rankings?groupId=${groupId}`)}
                   className="bg-yellow-500 hover:bg-yellow-400 text-black text-xs px-2 py-1 rounded h-9 flex items-center"
                 >
                   ランキングを見る
@@ -1004,10 +828,10 @@ function GroupPageInner({ groupId }: { groupId: string }) {
                 <span>自動コピー</span>
               </label>
 
+              {/* 任意：手動更新（Realtimeが瞬断した時の保険として有用。既存UXを壊さず追加） */}
               <button
                 type="button"
                 onClick={() => {
-                  markUserGesture();
                   setLoading(true);
                   void fetchRaidsRef.current();
                 }}
@@ -1089,17 +913,23 @@ function GroupPageInner({ groupId }: { groupId: string }) {
 
                     <div className="text-xs">
                       {hpValueNumber != null ? (
-                        <span style={hpPercentStyle(percentRaw)} className="mr-2 font-mono">
-                          {formatNumberWithComma(hpValueNumber)} HP
+                        <span className="font-mono">
+                          {formatNumberWithComma(hpValueNumber)}
+                          {percentDisplay ? (
+                            <span style={hpPercentStyle(percentRaw)} className="ml-2">
+                              HP {percentDisplay}
+                            </span>
+                          ) : (
+                            <span className="ml-2 text-slate-400">HP ?</span>
+                          )}
+                        </span>
+                      ) : percentDisplay ? (
+                        <span style={hpPercentStyle(percentRaw)} className="font-mono">
+                          HP {percentDisplay}
                         </span>
                       ) : (
-                        <span className="text-slate-400 mr-2">HP 不明</span>
+                        <span className="text-slate-400">HP ?</span>
                       )}
-                      {percentDisplay ? (
-                        <span style={hpPercentStyle(percentRaw)} className="text-xs font-mono">
-                          {percentDisplay}
-                        </span>
-                      ) : null}
                     </div>
                   </div>
                 </div>
