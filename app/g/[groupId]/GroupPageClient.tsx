@@ -35,28 +35,40 @@ const AUTO_COPY_ENABLED_KEY = "gbf-raid-auto-copy-enabled";
 const COPIED_IDS_KEY = "gbf-copied-raid-ids";
 const MEMBER_MAX_FILTER_KEY = "gbf-raid-member-max-filter";
 
-function getPublicEnv(name: string): string | undefined {
-  // Next.js の client では process.env.NEXT_PUBLIC_* が埋め込まれます
-  // eslint-disable-next-line no-process-env
-  const v = process.env[name];
-  return v && String(v).trim().length > 0 ? String(v) : undefined;
-}
+/**
+ * Supabase browser client を singleton 化（GoTrueClient 警告を抑える）
+ * - ページ内/Hot Reload/StrictMode 等で複数生成されるのを避ける
+ */
+function getSupabaseBrowserClient(): SupabaseClient | null {
+  if (typeof window === "undefined") return null;
 
-function createSupabaseBrowserClient(): SupabaseClient | null {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-
-  // 互換で別名も許すなら「直書き」で列挙（動的参照はしない）
   const anon =
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
     process.env.NEXT_PUBLIC_SUPABASE_ANON?.trim();
 
-  // ※ クライアントでは SUPABASE_URL / SUPABASE_ANON_*（NEXT_PUBLICなし）は読めないので削除推奨
   if (!url || !anon) return null;
 
-  return createClient(url, anon, {
+  const g = globalThis as unknown as {
+    __gbf_supabase__?: SupabaseClient;
+    __gbf_supabase_key__?: string;
+  };
+
+  const key = `${url}|${anon.slice(0, 12)}`;
+
+  if (g.__gbf_supabase__ && g.__gbf_supabase_key__ === key) {
+    return g.__gbf_supabase__;
+  }
+
+  const client = createClient(url, anon, {
     auth: { persistSession: true, autoRefreshToken: true },
     realtime: { params: { eventsPerSecond: 10 } },
   });
+
+  g.__gbf_supabase__ = client;
+  g.__gbf_supabase_key__ = key;
+
+  return client;
 }
 
 /**
@@ -196,6 +208,27 @@ function GroupPageInner({ groupId }: { groupId: string }) {
   const channelRef = useRef<any>(null);
   const subscribedGroupIdRef = useRef<string | null>(null);
 
+  // ===== クリップボード自動コピーの失敗を減らすため「直近のユーザー操作」を記録 =====
+  const lastUserGestureAtRef = useRef<number>(0);
+  const markUserGesture = useCallback(() => {
+    lastUserGestureAtRef.current = Date.now();
+  }, []);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const onPointer = () => markUserGesture();
+    const onKey = () => markUserGesture();
+
+    // capture で早めに拾う（ボタン/リストクリック等）
+    window.addEventListener("pointerdown", onPointer, { capture: true });
+    window.addEventListener("keydown", onKey, { capture: true });
+
+    return () => {
+      window.removeEventListener("pointerdown", onPointer, { capture: true } as any);
+      window.removeEventListener("keydown", onKey, { capture: true } as any);
+    };
+  }, [markUserGesture]);
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     currentUserIdRef.current = window.localStorage.getItem("extensionUserId");
@@ -227,6 +260,29 @@ function GroupPageInner({ groupId }: { groupId: string }) {
       }
       return next;
     });
+  }, []);
+
+  const canAttemptAutoClipboard = useCallback(async (): Promise<boolean> => {
+    if (typeof window === "undefined") return false;
+    if (!window.isSecureContext) return false;
+    if (document.visibilityState !== "visible") return false;
+    if (!document.hasFocus()) return false;
+
+    // 直近にページ内でユーザー操作があった時だけ試す（失敗ログを抑える）
+    const ms = Date.now() - (lastUserGestureAtRef.current || 0);
+    if (ms > 15000) return false;
+
+    // permissions が取れる環境ならチェック（取れない環境は無視）
+    try {
+      if ("permissions" in navigator && (navigator.permissions as any)?.query) {
+        const st = await navigator.permissions.query({ name: "clipboard-write" as PermissionName });
+        if (st.state === "denied") return false;
+      }
+    } catch {
+      // noop
+    }
+
+    return true;
   }, []);
 
   async function writeClipboard(text: string) {
@@ -352,6 +408,8 @@ function GroupPageInner({ groupId }: { groupId: string }) {
   }, [groupId, fetchRaids]);
 
   async function copyId(text: string, internalId?: string) {
+    // 手動クリックはユーザー操作なのでここで mark
+    markUserGesture();
     try {
       const ok = await writeClipboard(text);
       if (!ok) return;
@@ -476,9 +534,9 @@ function GroupPageInner({ groupId }: { groupId: string }) {
   const setupRealtime = useCallback(async () => {
     if (!groupId) return;
 
-    // supabase client 初期化（1回だけ）
+    // supabase client 初期化（singleton）
     if (!sbRef.current) {
-      sbRef.current = createSupabaseBrowserClient();
+      sbRef.current = getSupabaseBrowserClient();
     }
 
     // client が作れないなら Realtimeは使えない（ただし画面は初回fetchで動く）
@@ -528,25 +586,19 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     // broadcast購読
     const ch = sb
       .channel(channelName)
-      .on(
-        "broadcast",
-        { event: "raid" },
-        (payload: any) => {
-          // payload.payload に INSERTされた行が入る想定
-          const row = (payload as any)?.payload as RaidRow | undefined;
-          if (!row?.id) return;
-          if (!row.raid_id) return;
-          upsertIncomingRaid(row);
-        }
-      );
+      .on("broadcast", { event: "raid" }, (payload: any) => {
+        const row = (payload as any)?.payload as RaidRow | undefined;
+        if (!row?.id) return;
+        if (!row.raid_id) return;
+        upsertIncomingRaid(row);
+      });
 
     channelRef.current = ch;
     subscribedGroupIdRef.current = groupId;
 
     ch.subscribe((status: string) => {
-      // SUBSCRIBED / TIMED_OUT / CLOSED / CHANNEL_ERROR
       if (status === "SUBSCRIBED") {
-        // OK（表示は変えない：既存UI維持）
+        // OK
       } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
         console.warn("realtime subscribe failed:", status);
       }
@@ -571,7 +623,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     };
   }, [groupId, setupRealtime, teardownRealtime]);
 
-  // ===== タブ/ウィンドウ復帰時の「瞬間コピー」ロジック（既存維持） =====
+  // ===== タブ/ウィンドウ復帰時の「瞬間コピー」ロジック（失敗ログを出さない） =====
   useEffect(() => {
     let disposed = false;
 
@@ -598,12 +650,18 @@ function GroupPageInner({ groupId }: { groupId: string }) {
       if (!latest?.raid_id) return false;
       if (lastActiveCopiedRaidInternalIdRef.current === latest.id) return false;
 
+      // ここが重要：自動コピーを“試すべき状況”でないなら、失敗させずに終了
+      const okToTry = await canAttemptAutoClipboard();
+      if (!okToTry) {
+        // うるさくしない（必要ならメッセージだけ出す）
+        return false;
+      }
+
       const ok = await writeClipboard(latest.raid_id);
       if (!ok) return false;
 
       lastActiveCopiedRaidInternalIdRef.current = latest.id;
 
-      // UI反映（リング＆コピー済み＆メッセージ）
       setLastAutoCopiedRaidId(latest.id);
       addToCopied(latest.id);
       setCopyMessage(`ID ${latest.raid_id} をコピーしました`);
@@ -615,25 +673,22 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     const copyLatestOnActive = async () => {
       if (disposed) return;
 
-      // 自動コピーOFFなら何もしない
       if (!autoCopyEnabledRef.current) return;
 
-      // 可視＆フォーカス時のみ
       if (document.visibilityState !== "visible") return;
       if (!document.hasFocus()) return;
 
-      // 1) まず「今見えている filtered（ref）」から即コピー（fetch待ちなし）
+      // 1) まず手元の表示から
       const immediateList = filteredRaidsRef.current;
       if (immediateList && immediateList.length > 0) {
         const latestNow = pickLatestByCreatedAt(immediateList);
         if (latestNow) {
           await doCopy(latestNow);
-          // 復帰タイミングで autoCopy effect が暴発しないよう抑止
           applySuppressForAutoCopyEffect(immediateList);
         }
       }
 
-      // 2) 次に最新取得（Realtime取りこぼし対策にもなる）：復帰時のみ
+      // 2) 次に最新取得（Realtime取りこぼし保険）
       fetchRaidsRef
         .current()
         .then(async (merged) => {
@@ -669,13 +724,14 @@ function GroupPageInner({ groupId }: { groupId: string }) {
       if (document.visibilityState === "visible") void copyLatestOnActive();
     };
     const onFocus = () => {
+      // フォーカス復帰はだいたいユーザー操作なので、記録だけ更新（失敗率を下げる）
+      markUserGesture();
       void copyLatestOnActive();
     };
 
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onFocus);
 
-    // 初回表示時も、すでにアクティブなら最新コピー
     void copyLatestOnActive();
 
     return () => {
@@ -683,8 +739,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onFocus);
     };
-    // 既存同様：addToCopiedだけ依存（内部はrefで最新参照）
-  }, [addToCopied, getDisplayName, matchesMemberMax]);
+  }, [addToCopied, canAttemptAutoClipboard, getDisplayName, markUserGesture]);
 
   // ===== 通知音（新着検知）既存ロジック維持 =====
   useEffect(() => {
@@ -714,7 +769,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     if (hasMatch) playNotifySound();
   }, [raids, bossFilter, seriesFilter, memberMaxFilter, playNotifySound, getDisplayName]);
 
-  // ===== 自動コピー（filteredに新規が入った瞬間）既存ロジック維持 =====
+  // ===== 自動コピー（filteredに新規が入った瞬間） =====
   const filteredRaids = raids.filter((raid) => {
     const matchBoss = bossFilter ? getDisplayName(raid) === bossFilter : true;
     const raidSeries = (raid.series ?? "").toString().trim();
@@ -753,21 +808,32 @@ function GroupPageInner({ groupId }: { groupId: string }) {
 
     if (newlyAdded.length > 0) {
       const target = newlyAdded[0];
+
       (async () => {
+        // ここが重要：無理な状況では試さない（エラーを出さない）
+        const okToTry = await canAttemptAutoClipboard();
+        if (!okToTry) return;
+
         const ok = await writeClipboard(target.raid_id);
-        if (!ok) {
-          console.error("自動コピーに失敗しました: clipboard write failed");
-          return;
-        }
+        if (!ok) return;
+
         setLastAutoCopiedRaidId(target.id);
         addToCopied(target.id);
         setCopyMessage(`ID ${target.raid_id} をコピーしました`);
         setTimeout(() => setCopyMessage(null), 1500);
-      })().catch((err) => console.error("自動コピーに失敗しました:", err));
+      })().catch(() => {});
     }
 
     seenFilteredRaidIdsRef.current = currentIds;
-  }, [filteredRaids, bossFilter, seriesFilter, memberMaxFilter, autoCopyEnabled, addToCopied]);
+  }, [
+    filteredRaids,
+    bossFilter,
+    seriesFilter,
+    memberMaxFilter,
+    autoCopyEnabled,
+    addToCopied,
+    canAttemptAutoClipboard,
+  ]);
 
   const normalizePercent = (raw: number | null | undefined): number | null => {
     if (raw == null) return null;
@@ -879,7 +945,10 @@ function GroupPageInner({ groupId }: { groupId: string }) {
               <div className="flex items-end gap-2">
                 <button
                   type="button"
-                  onClick={() => playNotifySound()}
+                  onClick={() => {
+                    markUserGesture();
+                    playNotifySound();
+                  }}
                   className="bg-slate-700 hover:bg-slate-600 text-xs px-2 py-1 rounded h-9 flex items-center min-w-[48px] whitespace-nowrap"
                 >
                   音テスト
@@ -887,7 +956,10 @@ function GroupPageInner({ groupId }: { groupId: string }) {
 
                 <button
                   type="button"
-                  onClick={() => router.push(`/raids/rankings?groupId=${groupId}`)}
+                  onClick={() => {
+                    markUserGesture();
+                    router.push(`/raids/rankings?groupId=${groupId}`);
+                  }}
                   className="bg-yellow-500 hover:bg-yellow-400 text-black text-xs px-2 py-1 rounded h-9 flex items-center"
                 >
                   ランキングを見る
@@ -932,10 +1004,10 @@ function GroupPageInner({ groupId }: { groupId: string }) {
                 <span>自動コピー</span>
               </label>
 
-              {/* 任意：手動更新（Realtimeが瞬断した時の保険として有用。既存UXを壊さず追加） */}
               <button
                 type="button"
                 onClick={() => {
+                  markUserGesture();
                   setLoading(true);
                   void fetchRaidsRef.current();
                 }}
