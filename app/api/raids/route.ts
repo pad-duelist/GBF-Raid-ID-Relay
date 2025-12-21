@@ -413,6 +413,7 @@ export async function GET(req: NextRequest) {
       )
       .eq("group_id", matchedGroupId)
       .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
       .limit(isNaN(Number(limitParam)) ? 50 : Number(limitParam));
 
     if (bossNameParam) {
@@ -593,7 +594,7 @@ export async function POST(req: NextRequest) {
     };
 
     const channelName = realtimeChannelNameForGroup(matchedGroupId);
-    void broadcastRaid(channelName, payload);
+    await broadcastRaid(channelName, payload);
 
     return NextResponse.json({ ok: true }, { status: 200 });
   } catch (e) {
