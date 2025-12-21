@@ -1049,15 +1049,19 @@ function GroupPageInner({ groupId }: { groupId: string }) {
               const isCopied = copiedIds.has(raid.id);
 
               return (
-                <div
-                  key={raid.id}
-                  onClick={() => copyId(raid.raid_id, raid.id)}
-                  className={
-                    "flex items-center justify-between bg-slate-800/80 rounded-lg px-3 py-2 text-sm shadow cursor-pointer hover:bg-slate-700/80 transition-colors" +
-                    (isAutoCopied ? " ring-2 ring-emerald-400" : "") +
-                    (isCopied ? " opacity-60" : "")
-                  }
-                >
+               <div
+  key={raid.id}
+  onPointerDown={(e) => {
+    // テキスト選択（ドラッグ選択）による反転を防ぐ
+    e.preventDefault();
+  }}
+  onClick={() => copyId(raid.raid_id, raid.id)}
+  className={
+    "flex items-center justify-between bg-slate-800/80 rounded-lg px-3 py-2 text-sm shadow cursor-pointer hover:bg-slate-700/80 transition-colors select-none" +
+    (isAutoCopied ? " ring-2 ring-emerald-400" : "") +
+    (isCopied ? " opacity-60" : "")
+  }
+>
                   <div className="flex items-center gap-3">
                     {imageUrl && (
                       <img
