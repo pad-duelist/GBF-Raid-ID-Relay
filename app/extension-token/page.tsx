@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabaseBrowserClient } from "@/lib/supabaseClient";
-
 
 type GroupInfo = {
   id: string;
@@ -12,8 +11,10 @@ type GroupInfo = {
 };
 
 export default function ExtensionUserIdPage() {
-  const supabase = supabaseBrowserClient;
   const router = useRouter();
+
+  // singleton getter から取得（定数 supabaseBrowserClient は廃止）
+  const supabase = useMemo(() => getSupabaseBrowserClient(), []);
 
   const [userId, setUserId] = useState<string | null>(null);
   const [userError, setUserError] = useState<string | null>(null);
@@ -23,6 +24,14 @@ export default function ExtensionUserIdPage() {
 
   // ログインユーザー取得
   useEffect(() => {
+    if (!supabase) {
+      setUserError(
+        "Supabase の環境変数が不足しているためログイン状態を確認できません。"
+      );
+      setUserId(null);
+      return;
+    }
+
     const fetchUser = async () => {
       const {
         data: { user },
@@ -35,6 +44,7 @@ export default function ExtensionUserIdPage() {
         return;
       }
 
+      setUserError(null);
       setUserId(user.id);
 
       // ★ 自分のユーザーIDを localStorage に保存（viewer で除外に使う）
@@ -45,7 +55,7 @@ export default function ExtensionUserIdPage() {
       }
     };
 
-    fetchUser();
+    void fetchUser();
   }, [supabase]);
 
   // 所属グループ取得
@@ -73,7 +83,7 @@ export default function ExtensionUserIdPage() {
       }
     };
 
-    fetchGroups();
+    void fetchGroups();
   }, [userId]);
 
   const handleCopy = async () => {
@@ -87,16 +97,30 @@ export default function ExtensionUserIdPage() {
   };
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
     router.replace("/login");
   };
+
+  // env不足などで supabase が作れない場合の表示（念のため）
+  if (!supabase) {
+    return (
+      <div className="mx-auto max-w-xl px-4 py-8 space-y-4">
+        <h1 className="text-2xl font-bold text-white">拡張機能用ユーザーID</h1>
+        <p className="text-sm text-gray-300">
+          Supabase の環境変数が不足しているため、このページを表示できません。
+          <br />
+          NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY を確認してください。
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-xl px-4 py-8 space-y-8">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-white">
-          拡張機能用ユーザーID
-        </h1>
+        <h1 className="text-2xl font-bold text-white">拡張機能用ユーザーID</h1>
         <button
           type="button"
           onClick={handleLogout}
@@ -156,9 +180,7 @@ export default function ExtensionUserIdPage() {
       </section>
 
       <section>
-        <h2 className="mb-2 text-lg font-semibold text-white">
-          所属グループへのリンク
-        </h2>
+        <h2 className="mb-2 text-lg font-semibold text-white">所属グループへのリンク</h2>
 
         {groupsLoading && (
           <p className="text-sm text-gray-300">グループ情報を読み込み中です…</p>
@@ -184,8 +206,7 @@ export default function ExtensionUserIdPage() {
                 <div>
                   <div className="font-semibold text-gray-100">{g.name}</div>
                   <div className="text-xs text-gray-400">
-                    ステータス:
-                    {g.status === "owner" ? " 管理者" : " メンバー"}
+                    ステータス:{g.status === "owner" ? " 管理者" : " メンバー"}
                   </div>
                 </div>
                 <a
