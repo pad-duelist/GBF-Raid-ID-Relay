@@ -3,7 +3,8 @@
 
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 import { formatTimeAgo } from "@/lib/timeAgo";
 import { formatNumberWithComma } from "@/lib/numberFormat";
 import { useBattleNameMap } from "@/lib/useBattleNameMap";
@@ -34,42 +35,6 @@ const NOTIFY_VOLUME_KEY = "gbf-raid-notify-volume";
 const AUTO_COPY_ENABLED_KEY = "gbf-raid-auto-copy-enabled";
 const COPIED_IDS_KEY = "gbf-copied-raid-ids";
 const MEMBER_MAX_FILTER_KEY = "gbf-raid-member-max-filter";
-
-/**
- * Supabase browser client を singleton 化（GoTrueClient 警告を抑える）
- * - ページ内/Hot Reload/StrictMode 等で複数生成されるのを避ける
- */
-function getSupabaseBrowserClient(): SupabaseClient | null {
-  if (typeof window === "undefined") return null;
-
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-  const anon =
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON?.trim();
-
-  if (!url || !anon) return null;
-
-  const g = globalThis as unknown as {
-    __gbf_supabase__?: SupabaseClient;
-    __gbf_supabase_key__?: string;
-  };
-
-  const key = `${url}|${anon.slice(0, 12)}`;
-
-  if (g.__gbf_supabase__ && g.__gbf_supabase_key__ === key) {
-    return g.__gbf_supabase__;
-  }
-
-  const client = createClient(url, anon, {
-    auth: { persistSession: true, autoRefreshToken: true },
-    realtime: { params: { eventsPerSecond: 10 } },
-  });
-
-  g.__gbf_supabase__ = client;
-  g.__gbf_supabase_key__ = key;
-
-  return client;
-}
 
 /**
  * ★ラッパー：アクセス判定だけを担当

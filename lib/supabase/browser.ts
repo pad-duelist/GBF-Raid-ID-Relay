@@ -8,24 +8,41 @@ function getEnv(name: string): string | undefined {
   return s.length > 0 ? s : undefined;
 }
 
-function createSupabaseBrowserClient(): SupabaseClient {
-  const url = getEnv("NEXT_PUBLIC_SUPABASE_URL");
-  const anon = getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY") || getEnv("NEXT_PUBLIC_SUPABASE_ANON");
+type G = {
+  __gbf_sb?: SupabaseClient;
+  __gbf_sb_key?: string;
+};
 
-  if (!url || !anon) {
-    // クライアント側で必要になる環境変数なので、ここは明確に落として気づけるようにする
-    throw new Error(
-      "Missing NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY (or NEXT_PUBLIC_SUPABASE_ANON)."
-    );
+/**
+ * ブラウザ用 SupabaseClient を “必要になった時だけ” 生成して globalThis にキャッシュします。
+ * - SSR中（windowなし）は null
+ * - env不足でも null（画面はfetch等で動かしたい、という運用に合わせる）
+ */
+export function getSupabaseBrowserClient(): SupabaseClient | null {
+  if (typeof window === "undefined") return null;
+
+  const url = getEnv("NEXT_PUBLIC_SUPABASE_URL");
+  const anon =
+    getEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY") || getEnv("NEXT_PUBLIC_SUPABASE_ANON");
+
+  if (!url || !anon) return null;
+
+  const g = globalThis as unknown as G;
+
+  // URLとキーが変わったときだけ作り直す（基本は変わりません）
+  const key = `${url}|${anon.slice(0, 12)}`;
+
+  if (g.__gbf_sb && g.__gbf_sb_key === key) {
+    return g.__gbf_sb;
   }
 
-  return createClient(url, anon, {
+  const client = createClient(url, anon, {
     auth: { persistSession: true, autoRefreshToken: true },
     realtime: { params: { eventsPerSecond: 10 } },
   });
+
+  g.__gbf_sb = client;
+  g.__gbf_sb_key = key;
+
+  return client;
 }
-
-const g = globalThis as unknown as { __sb?: SupabaseClient };
-
-// ★ブラウザ（同一タブ）で Supabase クライアントを1つに統一する
-export const supabaseBrowser: SupabaseClient = g.__sb ?? (g.__sb = createSupabaseBrowserClient());
