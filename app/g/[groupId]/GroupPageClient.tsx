@@ -1,4 +1,3 @@
-// app/g/[groupId]/GroupPageClient.tsx
 "use client";
 
 import React, { useEffect, useState, useRef, useCallback } from "react";
@@ -34,7 +33,16 @@ const NOTIFY_ENABLED_KEY = "gbf-raid-notify-enabled";
 const NOTIFY_VOLUME_KEY = "gbf-raid-notify-volume";
 const AUTO_COPY_ENABLED_KEY = "gbf-raid-auto-copy-enabled";
 const COPIED_IDS_KEY = "gbf-copied-raid-ids";
+
+// 旧：参戦者数はグローバルキーのみだった（互換維持のため残す）
 const MEMBER_MAX_FILTER_KEY = "gbf-raid-member-max-filter";
+
+// ★追加Remember対象：マルチ/シリーズ
+const BOSS_FILTER_KEY = "gbf-raid-boss-filter";
+const SERIES_FILTER_KEY = "gbf-raid-series-filter";
+
+// ★追加：グループ別保存キー
+const keyForGroup = (base: string, groupId: string) => `${base}:${groupId}`;
 
 /**
  * ★ラッパー：アクセス判定だけを担当
@@ -388,6 +396,12 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     }
   }
 
+  /**
+   * ★ localStorage 復元
+   * - 通知/音量/自動コピー（従来通りグローバル）
+   * - マルチ/シリーズ/参戦者数（グループごとに保存 & 復元）
+   *   ※参戦者数は旧グローバルキーも読み、移行できるようにする
+   */
   useEffect(() => {
     audioRef.current = new Audio("/notify.mp3");
 
@@ -396,7 +410,6 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     const savedEnabled = window.localStorage.getItem(NOTIFY_ENABLED_KEY);
     const savedVolume = window.localStorage.getItem(NOTIFY_VOLUME_KEY);
     const savedAutoCopy = window.localStorage.getItem(AUTO_COPY_ENABLED_KEY);
-    const savedMemberMax = window.localStorage.getItem(MEMBER_MAX_FILTER_KEY);
 
     if (savedEnabled !== null) setNotifyEnabled(savedEnabled === "true");
     if (savedVolume !== null) {
@@ -405,16 +418,45 @@ function GroupPageInner({ groupId }: { groupId: string }) {
     }
     if (savedAutoCopy !== null) setAutoCopyEnabled(savedAutoCopy === "true");
 
+    // ★マルチ/シリーズ/参戦者数 ensure groupId
+    if (!groupId) return;
+
+    // マルチ
+    const savedBoss = window.localStorage.getItem(keyForGroup(BOSS_FILTER_KEY, groupId));
+    if (savedBoss != null) {
+      setBossFilter(savedBoss);
+    }
+
+    // シリーズ（全角スペース等を正規化してから入れる）
+    const savedSeriesRaw = window.localStorage.getItem(keyForGroup(SERIES_FILTER_KEY, groupId));
+    if (savedSeriesRaw != null) {
+      const normalized = savedSeriesRaw.replace(/\u3000/g, " ").trim();
+      setSeriesFilter(normalized);
+    }
+
+    // 参戦者数：新（グループ別）優先、無ければ旧（グローバル）も読む
+    const savedMemberMax =
+      window.localStorage.getItem(keyForGroup(MEMBER_MAX_FILTER_KEY, groupId)) ??
+      window.localStorage.getItem(MEMBER_MAX_FILTER_KEY);
+
     // ★参戦者数フィルタ復元（""/null = 無制限）
     if (savedMemberMax !== null) {
       const n = Number(savedMemberMax);
       if (!Number.isNaN(n) && n >= 2 && n <= 5) setMemberMaxFilter(n);
       else setMemberMaxFilter(null);
     }
-  }, []);
+  }, [groupId]);
 
+  /**
+   * ★ localStorage 保存
+   * - 通知/音量/自動コピー：従来通りグローバル（既存を壊さない）
+   * - マルチ/シリーズ/参戦者数：グループ別に保存
+   *   ※参戦者数は旧グローバルキーも引き続き保存（互換維持）
+   */
   useEffect(() => {
     if (typeof window === "undefined") return;
+
+    // 既存：グローバル保存
     window.localStorage.setItem(NOTIFY_ENABLED_KEY, String(notifyEnabled));
     window.localStorage.setItem(NOTIFY_VOLUME_KEY, String(notifyVolume));
     window.localStorage.setItem(AUTO_COPY_ENABLED_KEY, String(autoCopyEnabled));
@@ -422,7 +464,16 @@ function GroupPageInner({ groupId }: { groupId: string }) {
       MEMBER_MAX_FILTER_KEY,
       memberMaxFilter == null ? "" : String(memberMaxFilter)
     );
-  }, [notifyEnabled, notifyVolume, autoCopyEnabled, memberMaxFilter]);
+
+    // 追加：グループ別保存
+    if (!groupId) return;
+    window.localStorage.setItem(keyForGroup(BOSS_FILTER_KEY, groupId), bossFilter);
+    window.localStorage.setItem(keyForGroup(SERIES_FILTER_KEY, groupId), seriesFilter);
+    window.localStorage.setItem(
+      keyForGroup(MEMBER_MAX_FILTER_KEY, groupId),
+      memberMaxFilter == null ? "" : String(memberMaxFilter)
+    );
+  }, [groupId, notifyEnabled, notifyVolume, autoCopyEnabled, bossFilter, seriesFilter, memberMaxFilter]);
 
   // ref同期（イベントハンドラで最新値を参照するため）
   useEffect(() => {
@@ -594,7 +645,7 @@ function GroupPageInner({ groupId }: { groupId: string }) {
 
     const pickLatestByCreatedAt = (list: RaidRow[]) => {
       if (!list || list.length === 0) return null;
-      return list.reduce((a, b) => {
+      return list.reduce ( (a, b) => {
         const ta = Date.parse(a.created_at);
         const tb = Date.parse(b.created_at);
         if (Number.isNaN(ta) || Number.isNaN(tb)) return a;
@@ -840,6 +891,31 @@ function GroupPageInner({ groupId }: { groupId: string }) {
 
   const uniqueSeries = Object.keys(seriesCountMap).sort();
 
+  /**
+   * ★保存値が「今の候補に存在しない」場合の自動リセット
+   * - raidsが未取得（loading中）や0件のときに即リセットしてしまうと、
+   *   保存した条件が消えてしまうので、ロード完了かつ候補が揃ったタイミングのみ判定します。
+   */
+  useEffect(() => {
+    if (loading) return;
+    if (!raids || raids.length === 0) return;
+    if (!bossFilter) return;
+
+    if (!uniqueBosses.includes(bossFilter)) {
+      setBossFilter("");
+    }
+  }, [bossFilter, uniqueBosses, loading, raids]);
+
+  useEffect(() => {
+    if (loading) return;
+    if (!raids || raids.length === 0) return;
+    if (!seriesFilter) return;
+
+    if (!uniqueSeries.includes(seriesFilter)) {
+      setSeriesFilter("");
+    }
+  }, [seriesFilter, uniqueSeries, loading, raids]);
+
   return (
     <div className="min-h-screen bg-slate-900 text-slate-50 p-4">
       <div className="max-w-3xl mx-auto space-y-4">
@@ -1014,19 +1090,19 @@ function GroupPageInner({ groupId }: { groupId: string }) {
               const isCopied = copiedIds.has(raid.id);
 
               return (
-               <div
-  key={raid.id}
-  onPointerDown={(e) => {
-    // テキスト選択（ドラッグ選択）による反転を防ぐ
-    e.preventDefault();
-  }}
-  onClick={() => copyId(raid.raid_id, raid.id)}
-  className={
-    "flex items-center justify-between bg-slate-800/80 rounded-lg px-3 py-2 text-sm shadow cursor-pointer hover:bg-slate-700/80 transition-colors select-none" +
-    (isAutoCopied ? " ring-2 ring-emerald-400" : "") +
-    (isCopied ? " opacity-60" : "")
-  }
->
+                <div
+                  key={raid.id}
+                  onPointerDown={(e) => {
+                    // テキスト選択（ドラッグ選択）による反転を防ぐ
+                    e.preventDefault();
+                  }}
+                  onClick={() => copyId(raid.raid_id, raid.id)}
+                  className={
+                    "flex items-center justify-between bg-slate-800/80 rounded-lg px-3 py-2 text-sm shadow cursor-pointer hover:bg-slate-700/80 transition-colors select-none" +
+                    (isAutoCopied ? " ring-2 ring-emerald-400" : "") +
+                    (isCopied ? " opacity-60" : "")
+                  }
+                >
                   <div className="flex items-center gap-3">
                     {imageUrl && (
                       <img
