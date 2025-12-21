@@ -1,2 +1,3 @@
 // lib/supabaseClient.ts
-export { supabaseBrowserClient, supabaseBrowser, getSupabaseBrowserClient } from "./supabaseBrowser";
+export { getSupabaseBrowserClient } from "./supabaseBrowser";
+export type { SupabaseClient } from "@supabase/supabase-js";
