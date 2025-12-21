@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { supabaseBrowserClient } from "@/lib/supabaseClient";
+import { getSupabaseBrowserClient } from "@/lib/supabaseClient";
+
 
 type GroupInfo = {
   id: string;

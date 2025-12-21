@@ -3,10 +3,10 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { supabaseBrowserClient } from "@/lib/supabaseClient";
+import { getSupabaseBrowserClient } from "@/lib/supabaseClient";
 
 export default function LoginPage() {
-  const supabase = supabaseBrowserClient;
+  const supabase = getSupabaseBrowserClient();
   const router = useRouter();
 
   // すでにログイン済みなら /extension-token へ飛ばす
