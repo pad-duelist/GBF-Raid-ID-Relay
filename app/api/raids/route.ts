@@ -535,7 +535,7 @@ const hpValueNum = hpValue == null ? null : Number(hpValue);
 const isUltBaha = bossName === ULT_BAHAMUT_NAME || battleName === ULT_BAHAMUT_NAME;
 
 // ★送信者IDの変数名はあなたのroute.tsに合わせてください（例：sender_user_id）
-const senderId = typeof sender_user_id === "string" ? sender_user_id : null;
+const senderId = typeof senderUser_Id === "string" ? sender_user_id : null;
 
 let ultBahaThreshold = ULT_BAHAMUT_HP_THRESHOLD_DEFAULT;
 
