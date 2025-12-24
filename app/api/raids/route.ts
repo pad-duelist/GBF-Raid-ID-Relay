@@ -1,6 +1,7 @@
 // app/api/raids/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { getUserDamageOverrideMap } from "@/lib/userDamageOverrides";
 import crypto from "crypto";
 
 export const dynamic = "force-dynamic";
@@ -83,7 +84,7 @@ function toJstIsoString(iso: string | null | undefined): string | null {
 
 // ===== 定数: 特殊ボスの判定 =====
 const ULT_BAHAMUT_NAME = "Lv200 アルティメットバハムート";
-const ULT_BAHAMUT_HP_THRESHOLD = 70000000;
+const ULT_BAHAMUT_HP_THRESHOLD_DEFAULT = 70000000;
 
 // ===== groupId 解決（Apoklisi -> UUID） =====
 function isUuidLike(s: string) {
@@ -529,18 +530,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
     }
 
-    // アルバハ200のHP抑制（既存仕様）
-    const hpValueNum = hpValue == null ? null : Number(hpValue);
-    const isUltBaha = bossName === ULT_BAHAMUT_NAME || battleName === ULT_BAHAMUT_NAME;
+    // アルバハ200のHP抑制（user_idごとにスプシで上書き可）
+const hpValueNum = hpValue == null ? null : Number(hpValue);
+const isUltBaha = bossName === ULT_BAHAMUT_NAME || battleName === ULT_BAHAMUT_NAME;
 
-    if (
-      isUltBaha &&
-      hpValueNum != null &&
-      !Number.isNaN(hpValueNum) &&
-      hpValueNum <= ULT_BAHAMUT_HP_THRESHOLD
-    ) {
-      return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
-    }
+// ★送信者IDの変数名はあなたのroute.tsに合わせてください（例：sender_user_id）
+const senderId = typeof sender_user_id === "string" ? sender_user_id : null;
+
+let ultBahaThreshold = ULT_BAHAMUT_HP_THRESHOLD_DEFAULT;
+
+if (isUltBaha && senderId) {
+  const damageOverrides = await getUserDamageOverrideMap();
+  const override = damageOverrides.get(senderId);
+  if (override != null) ultBahaThreshold = override;
+}
+
+if (
+  isUltBaha &&
+  hpValueNum != null &&
+  !Number.isNaN(hpValueNum) &&
+  hpValueNum <= ultBahaThreshold
+) {
+  return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
+}
 
     // ★重要：canonical_boss_name は「書かない」方針（NULLのまま運用）
     const { data: inserted, error } = await sb
