@@ -2,6 +2,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getUserDamageOverrideMap } from "@/lib/userDamageOverrides";
+import { computeRangeUtc, type RankingPeriod } from "@/lib/rankingRange";
+
 import crypto from "crypto";
 
 export const dynamic = "force-dynamic";
@@ -362,6 +364,9 @@ export async function GET(req: NextRequest) {
   const limitParam = searchParams.get("limit");
   const excludeUserId = searchParams.get("excludeUserId");
   const mode = searchParams.get("mode"); // mode=channel
+  const period = searchParams.get("period") as RankingPeriod | null; // day|week|month
+  const date = searchParams.get("date"); // YYYY-MM-DD
+
 
   if (!groupIdParam) {
     return NextResponse.json({ error: "groupId is required" }, { status: 400 });
@@ -413,9 +418,19 @@ export async function GET(req: NextRequest) {
         ].join(",")
       )
       .eq("group_id", matchedGroupId)
-      .order("created_at", { ascending: false })
-      .order("id", { ascending: false })
-      .limit(isNaN(Number(limitParam)) ? 50 : Number(limitParam));
+      if (period && date) {
+  try {
+    const { startUtc, endUtc } = computeRangeUtc(period, date);
+    query = query.gte("created_at", startUtc).lt("created_at", endUtc);
+  } catch {
+    return NextResponse.json({ error: "invalid period/date" }, { status: 400 });
+  }
+}
+
+query = query
+  .order("created_at", { ascending: false })
+  .order("id", { ascending: false })
+  .limit(isNaN(Number(limitParam)) ? 50 : Number(limitParam));
 
     if (bossNameParam) {
       const normalizedBossNameParam = await mapNormalize(bossNameParam);
