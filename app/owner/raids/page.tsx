@@ -23,12 +23,22 @@ type RaidRow = {
 
 export default function OwnerRaidsPage() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+
   const [loading, setLoading] = useState(true);
   const [isOwner, setIsOwner] = useState(false);
   const [raids, setRaids] = useState<RaidRow[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // ★ nullガード（環境変数不足など）
+    if (!supabase) {
+      setLoading(false);
+      setError(
+        "Supabase の初期化に失敗しました。環境変数(NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY)を確認してください。"
+      );
+      return;
+    }
+
     const run = async () => {
       setLoading(true);
       setError(null);
@@ -44,7 +54,6 @@ export default function OwnerRaidsPage() {
         return;
       }
 
-      // owner 判定（自分の membership だけ確認）
       const { data: ownerRow, error: ownerErr } = await supabase
         .from("group_memberships")
         .select("id")
@@ -61,7 +70,6 @@ export default function OwnerRaidsPage() {
         return;
       }
 
-      // RPC（owner の全グループ分）
       const { data, error: rpcErr } = await supabase.rpc("get_owner_groups_raids", {
         p_limit: 300,
       });
