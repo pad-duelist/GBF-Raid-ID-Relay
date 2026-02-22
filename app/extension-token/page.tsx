@@ -22,6 +22,12 @@ export default function ExtensionUserIdPage() {
   const [groupsLoading, setGroupsLoading] = useState<boolean>(false);
   const [groupsError, setGroupsError] = useState<string | null>(null);
 
+  // ★ owner判定（groups から判定できるので追加問い合わせ不要）
+  const isOwner = useMemo(
+    () => groups.some((g) => g.status === "owner"),
+    [groups]
+  );
+
   // ログインユーザー取得
   useEffect(() => {
     if (!supabase) {
@@ -198,6 +204,25 @@ export default function ExtensionUserIdPage() {
 
         {!groupsLoading && !groupsError && groups.length > 0 && (
           <ul className="space-y-2">
+            {isOwner && (
+              <li className="flex items-center justify-between rounded border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-sm">
+                <div>
+                  <div className="font-semibold text-yellow-100">
+                    Ownerまとめ（全グループ）
+                  </div>
+                  <div className="text-xs text-yellow-200/80">
+                    status が「管理者」のグループ分をまとめて表示します
+                  </div>
+                </div>
+                <a
+                  href="/owner/raids"
+                  className="rounded bg-yellow-500/80 px-3 py-1 text-xs font-semibold text-black hover:bg-yellow-500"
+                >
+                  まとめへ
+                </a>
+              </li>
+            )}
+
             {groups.map((g) => (
               <li
                 key={g.id}
