@@ -240,6 +240,16 @@ async function isBossBlocked(name: string | null | undefined): Promise<boolean> 
 const BOSS_MAP_CSV_URL =
   process.env.BOSS_MAP_CSV_URL ?? process.env.NEXT_PUBLIC_BOSS_NAME_MAP_CSV_URL;
 
+
+// ===== battle mapping（boss_name -> series）CSV =====
+// 既存の NEXT_PUBLIC_BATTLE_MAPPING_CSV_URL をサーバ側でも参照してシリーズ判定に使う
+const BATTLE_MAPPING_CSV_URL =
+  process.env.BATTLE_MAPPING_CSV_URL ?? process.env.NEXT_PUBLIC_BATTLE_MAPPING_CSV_URL;
+
+// ===== series ごとの参戦者数上限（series,max）CSV =====
+// 例: 禁禍,17  (min は 1 固定)
+const SERIES_MEMBER_MAX_CSV_URL = process.env.SERIES_MEMBER_MAX_CSV_URL;
+
 let bossMapCache: { map: Record<string, string>; sortedKeys: string[] } | null = null;
 let lastBossMapFetched = 0;
 const BOSS_MAP_TTL = 5 * 60 * 1000;
@@ -336,6 +346,115 @@ async function mapNormalize(name: string | null | undefined): Promise<string | n
 
   return raw;
 }
+
+
+// ===== battle mapping cache（boss_name -> series） =====
+let battleSeriesMapCache: Record<string, string> | null = null;
+let lastBattleSeriesMapFetched = 0;
+const BATTLE_SERIES_MAP_TTL = 5 * 60 * 1000;
+
+async function fetchBattleSeriesMapCached(force = false): Promise<Record<string, string>> {
+  const now = Date.now();
+  if (!force && battleSeriesMapCache && now - lastBattleSeriesMapFetched < BATTLE_SERIES_MAP_TTL) {
+    return battleSeriesMapCache;
+  }
+
+  if (!BATTLE_MAPPING_CSV_URL) {
+    battleSeriesMapCache = {};
+    lastBattleSeriesMapFetched = now;
+    return battleSeriesMapCache;
+  }
+
+  try {
+    const res = await fetch(BATTLE_MAPPING_CSV_URL, { cache: "no-store" });
+    if (!res.ok) throw new Error(`failed to fetch battle mapping csv: ${res.status}`);
+    const text = await res.text();
+
+    const lines = text.split(/\r?\n/).filter(Boolean);
+    if (lines.length === 0) {
+      battleSeriesMapCache = {};
+      lastBattleSeriesMapFetched = now;
+      return battleSeriesMapCache;
+    }
+
+    const header = lines[0].split(",").map((h) => (h ?? "").trim().toLowerCase());
+    const iBoss = header.indexOf("boss_name");
+    const iSeries = header.indexOf("series");
+
+    const map: Record<string, string> = {};
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(",");
+      const boss = (cols[iBoss] ?? "").trim();
+      const series = (cols[iSeries] ?? "").trim();
+      if (!boss || !series) continue;
+      map[normalizeKey(boss)] = series;
+    }
+
+    battleSeriesMapCache = map;
+    lastBattleSeriesMapFetched = now;
+    return map;
+  } catch (e) {
+    console.error("fetchBattleSeriesMapCached error:", e);
+    battleSeriesMapCache = {};
+    lastBattleSeriesMapFetched = now;
+    return battleSeriesMapCache;
+  }
+}
+
+// ===== series,max cache =====
+let seriesMemberMaxCache: Record<string, number> | null = null;
+let lastSeriesMemberMaxFetched = 0;
+const SERIES_MEMBER_MAX_TTL = 5 * 60 * 1000;
+
+async function fetchSeriesMemberMaxCached(force = false): Promise<Record<string, number>> {
+  const now = Date.now();
+  if (!force && seriesMemberMaxCache && now - lastSeriesMemberMaxFetched < SERIES_MEMBER_MAX_TTL) {
+    return seriesMemberMaxCache;
+  }
+
+  if (!SERIES_MEMBER_MAX_CSV_URL) {
+    seriesMemberMaxCache = {};
+    lastSeriesMemberMaxFetched = now;
+    return seriesMemberMaxCache;
+  }
+
+  try {
+    const res = await fetch(SERIES_MEMBER_MAX_CSV_URL, { cache: "no-store" });
+    if (!res.ok) throw new Error(`failed to fetch series max csv: ${res.status}`);
+    const text = await res.text();
+
+    const lines = text.split(/\r?\n/).filter(Boolean);
+    if (lines.length === 0) {
+      seriesMemberMaxCache = {};
+      lastSeriesMemberMaxFetched = now;
+      return seriesMemberMaxCache;
+    }
+
+    const header = lines[0].split(",").map((h) => (h ?? "").trim().toLowerCase());
+    const iSeries = header.indexOf("series");
+    const iMax = header.indexOf("max");
+
+    const map: Record<string, number> = {};
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(",");
+      const series = (cols[iSeries] ?? "").trim();
+      const maxRaw = (cols[iMax] ?? "").trim();
+      if (!series || !maxRaw) continue;
+      const n = Number(maxRaw);
+      if (Number.isFinite(n)) map[series] = Math.trunc(n);
+    }
+
+    seriesMemberMaxCache = map;
+    lastSeriesMemberMaxFetched = now;
+    return map;
+  } catch (e) {
+    console.error("fetchSeriesMemberMaxCached error:", e);
+    seriesMemberMaxCache = {};
+    lastSeriesMemberMaxFetched = now;
+    return seriesMemberMaxCache;
+  }
+}
+
 
 // ===== 参戦者数抑制 =====
 function toIntOrNull(v: any): number | null {
@@ -452,9 +571,35 @@ query = query
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    const filtered = (data ?? []).filter(
-      (r: any) => !shouldSuppressByMembers(r?.member_current, r?.member_max)
-    );
+    // ① 既存の参戦者数抑制
+const filtered1 = (data ?? []).filter(
+  (r: any) => !shouldSuppressByMembers(r?.member_current, r?.member_max)
+);
+
+// ② スプシ（battle mapping）でシリーズ自動判定 → series,max（禁禍=17 等）で人数 1..max を適用
+//    ※ max が設定されている series のみ適用。未設定/判定不可は素通し。
+const battleSeriesMap = await fetchBattleSeriesMapCached(false);
+const seriesMaxMap = await fetchSeriesMemberMaxCached(false);
+
+const filtered = filtered1.filter((r: any) => {
+  const cur = toIntOrNull(r?.member_current);
+  if (cur === null) return true;
+
+  const bossRaw = (r?.boss_name ?? "").toString();
+  const battleRaw = (r?.battle_name ?? "").toString();
+
+  const bossKey = bossRaw ? normalizeKey(bossRaw) : "";
+  const battleKey = battleRaw ? normalizeKey(battleRaw) : "";
+
+  const series =
+    (bossKey && battleSeriesMap[bossKey]) || (battleKey && battleSeriesMap[battleKey]) || "";
+  if (!series) return true;
+
+  const max = seriesMaxMap[series];
+  if (!max) return true;
+
+  return cur >= 1 && cur <= max;
+});
 
     const rows = filtered.map((r: any) => ({
       ...r,
