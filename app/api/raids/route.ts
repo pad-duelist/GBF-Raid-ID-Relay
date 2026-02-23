@@ -571,20 +571,21 @@ query = query
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    // ① 既存の参戦者数抑制
-const filtered1 = (data ?? []).filter(
-  (r: any) => !shouldSuppressByMembers(r?.member_current, r?.member_max)
-);
-
-// ② スプシ（battle mapping）でシリーズ自動判定 → series,max（禁禍=17 等）で人数 1..max を適用
-//    ※ max が設定されている series のみ適用。未設定/判定不可は素通し。
+    // 参戦者数フィルタ
+// 既存の参戦者数抑制(18/30はcur>=10で抑制など)は基本維持しつつ、
+// スプシ(battle mapping)でシリーズが判定できて series,max が設定されている場合は
+// その max を優先して「人数 1..max」範囲で通す（禁禍=17 など）。
 const battleSeriesMap = await fetchBattleSeriesMapCached(false);
 const seriesMaxMap = await fetchSeriesMemberMaxCached(false);
 
-const filtered = filtered1.filter((r: any) => {
+const filtered = (data ?? []).filter((r: any) => {
   const cur = toIntOrNull(r?.member_current);
-  if (cur === null) return true;
+  const max = toIntOrNull(r?.member_max);
 
+  // 参戦人数が取れないものは、既存挙動に合わせて通す
+  if (cur === null || max === null) return true;
+
+  // まずシリーズ自動判定（boss_name 優先、無ければ battle_name）
   const bossRaw = (r?.boss_name ?? "").toString();
   const battleRaw = (r?.battle_name ?? "").toString();
 
@@ -593,15 +594,21 @@ const filtered = filtered1.filter((r: any) => {
 
   const series =
     (bossKey && battleSeriesMap[bossKey]) || (battleKey && battleSeriesMap[battleKey]) || "";
-  if (!series) return true;
 
-  const max = seriesMaxMap[series];
-  if (!max) return true;
+  const overrideMax = series ? seriesMaxMap[series] : undefined;
 
-  return cur >= 1 && cur <= max;
+  // series,max があるシリーズは、その max を優先（min=1固定）
+  if (overrideMax && Number.isFinite(overrideMax)) {
+    // 6人マルチで「満員は弾きたい」用途も残せるように特例
+    if (overrideMax === 6 && cur === 6) return false;
+    return cur >= 1 && cur <= overrideMax;
+  }
+
+  // 上書きが無い場合は、従来の抑制ロジックを適用
+  return !shouldSuppressByMembers(cur, max);
 });
 
-    const rows = filtered.map((r: any) => ({
+const rows = filtered.map((r: any) => ({
       ...r,
       created_at: toJstIsoString(r?.created_at),
     }));
@@ -685,11 +692,33 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, blocked: true }, { status: 200 });
     }
 
-    // 参戦者数抑制
-    if (shouldSuppressByMembers(memberCurrent, memberMax)) {
-      return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
-    }
+    // 参戦者数抑制（シリーズ上書き対応）
+    // battle mapping でシリーズが判定できて series,max が設定されている場合は
+    // その max を優先して「人数 1..max」範囲で通す（禁禍=17 など）。
+    const curNum = toIntOrNull(memberCurrent);
+    const maxNum = toIntOrNull(memberMax);
 
+    if (curNum !== null && maxNum !== null) {
+      const battleSeriesMap = await fetchBattleSeriesMapCached(false);
+      const seriesMaxMap = await fetchSeriesMemberMaxCached(false);
+
+      const bossKey = bossName ? normalizeKey(String(bossName)) : "";
+      const battleKey = battleName ? normalizeKey(String(battleName)) : "";
+      const series =
+        (bossKey && battleSeriesMap[bossKey]) || (battleKey && battleSeriesMap[battleKey]) || "";
+      const overrideMax = series ? seriesMaxMap[series] : undefined;
+
+      if (overrideMax && Number.isFinite(overrideMax)) {
+        const omax = Math.trunc(Number(overrideMax));
+        if (!(curNum >= 1 && curNum <= omax) || (omax === 6 && curNum === 6)) {
+          return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
+        }
+      } else {
+        if (shouldSuppressByMembers(curNum, maxNum)) {
+          return NextResponse.json({ ok: true, suppressed: true }, { status: 200 });
+        }
+      }
+    }
     // アルバハ200のHP抑制（user_idごとにスプシで上書き可）
 const hpValueNum = hpValue == null ? null : Number(hpValue);
 const isUltBaha = bossName === ULT_BAHAMUT_NAME || battleName === ULT_BAHAMUT_NAME;
