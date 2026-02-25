@@ -67,7 +67,7 @@ export default function DuoPageClient() {
       pendingCopyIdRef.current = null;
       void writeClipboard(pending);
     }
-  }, []);
+  }, [writeClipboard]);
 
   // raidsと同じ：ユーザー操作検知（自動コピー成功率UP）
   useEffect(() => {
@@ -101,7 +101,7 @@ export default function DuoPageClient() {
     return true;
   }, []);
 
-  async function writeClipboard(text: string) {
+  const writeClipboard = useCallback(async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
       return true;
@@ -119,7 +119,7 @@ export default function DuoPageClient() {
         return ok;
       } catch {
         return false;
-      }
+  }, []);
     }
   }
 
