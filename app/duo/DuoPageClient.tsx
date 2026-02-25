@@ -55,10 +55,18 @@ export default function DuoPageClient() {
 
   const [autoCopyEnabled, setAutoCopyEnabled] = useState(true);
   const autoCopyEnabledRef = useRef(true);
+  const pendingCopyIdRef = useRef<string | null>(null);
 
   const lastUserGestureAtRef = useRef(0);
   const markUserGesture = useCallback(() => {
     lastUserGestureAtRef.current = Date.now();
+
+    // 自動コピーが権限制約で弾かれた場合は、次のユーザー操作でコピーを再試行する
+    const pending = pendingCopyIdRef.current;
+    if (pending) {
+      pendingCopyIdRef.current = null;
+      void writeClipboard(pending);
+    }
   }, []);
 
   // raidsと同じ：ユーザー操作検知（自動コピー成功率UP）
@@ -239,8 +247,17 @@ export default function DuoPageClient() {
 
           (async () => {
             const okToTry = await canAttemptAutoClipboard();
-            if (!okToTry) return;
-            await writeClipboard(incoming.raid_id);
+            if (!okToTry) {
+              // ユーザー操作がないと弾かれる環境があるので予約（次のクリックでコピー）
+              pendingCopyIdRef.current = incoming.raid_id;
+              return;
+            }
+
+            const ok = await writeClipboard(incoming.raid_id);
+            if (!ok) {
+              // Clipboard APIが弾かれたら予約（次のクリックでコピー）
+              pendingCopyIdRef.current = incoming.raid_id;
+            }
           })().catch(() => {});
         }
       )
@@ -270,9 +287,13 @@ export default function DuoPageClient() {
       if (!latest) return;
 
       const okToTry = await canAttemptAutoClipboard();
-      if (!okToTry) return;
+      if (!okToTry) {
+        pendingCopyIdRef.current = latest.raid_id;
+        return;
+      }
 
-      await writeClipboard(latest.raid_id);
+      const ok = await writeClipboard(latest.raid_id);
+      if (!ok) pendingCopyIdRef.current = latest.raid_id;
     };
 
     const onVisibilityChange = () => {
@@ -309,13 +330,6 @@ export default function DuoPageClient() {
     ).sort();
   }, [rows]);
 
-  const manualCopy = useCallback(
-    async (id: string) => {
-      markUserGesture();
-      await writeClipboard(id);
-    },
-    [markUserGesture]
-  );
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-50">
@@ -405,12 +419,25 @@ export default function DuoPageClient() {
               return (
                 <div
                   key={r.id}
-                  className="flex items-center gap-3 px-3 py-2 border-t border-slate-800 hover:bg-slate-800/40"
+                  role="button"
+                  tabIndex={0}
+                  className="flex items-center gap-4 px-4 py-3 border-t border-slate-800 hover:bg-slate-800/60 cursor-pointer select-none"
+                  onClick={() => {
+                    markUserGesture();
+                    void writeClipboard(r.raid_id);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === \"Enter\" || e.key === \" \") {
+                      e.preventDefault();
+                      markUserGesture();
+                      void writeClipboard(r.raid_id);
+                    }
+                  }}
                 >
-                  <div className="w-10 h-10 rounded bg-slate-800 overflow-hidden flex items-center justify-center shrink-0">
+                  <div className="w-12 h-12 rounded-md bg-slate-800 overflow-hidden flex items-center justify-center shrink-0">
                     {img ? (
                       // next/imageに寄せたいなら差し替えてOK
-                      <img src={img} alt="" className="w-10 h-10 object-cover" />
+                      <img src={img} alt="" className="w-12 h-12 object-cover" />
                     ) : (
                       <div className="text-xs text-slate-500">NoImg</div>
                     )}
@@ -423,14 +450,7 @@ export default function DuoPageClient() {
 </div>
                   </div>
 
-                  <div className="font-mono text-base">{r.raid_id}</div>
-
-                  <button
-                    className="text-xs px-3 py-2 rounded bg-slate-800 hover:bg-slate-700"
-                    onClick={() => void manualCopy(r.raid_id)}
-                  >
-                    コピー
-                  </button>
+                  <div className="font-mono text-lg tracking-wide">{r.raid_id}</div>
                 </div>
               );
             })
