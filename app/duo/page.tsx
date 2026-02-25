@@ -1,7 +1,7 @@
-import DuoClient from "./DuoClient";
+import DuoPageClient from "./DuoPageClient";
 
 export const dynamic = "force-dynamic";
 
-export default function DuoPage() {
-  return <DuoClient groupKey="duo" />;
+export default function Page() {
+  return <DuoPageClient />;
 }
