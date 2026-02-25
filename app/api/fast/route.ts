@@ -1,34 +1,46 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-export const runtime = "nodejs"; // Edgeだと環境変数周りで詰むことがあるのでnode推奨
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const CORS_HEADERS: Record<string, string> = {
-  // 速度検証中は * でOK（運用で絞りたくなったら後で origin チェックに変更）
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST,OPTIONS",
-  "Access-Control-Allow-Headers": "content-type",
-  "Access-Control-Max-Age": "86400",
-};
+// 許可する Origin（グラブル本体）
+// 必要なら "https://game.granbluefantasy.jp" 以外もここに追加
+const ALLOWED_ORIGINS = new Set([
+  "https://game.granbluefantasy.jp",
+]);
+
+function corsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get("origin") ?? "";
+  const allowOrigin = ALLOWED_ORIGINS.has(origin) ? origin : "";
+
+  // credentials が "include" になるケースがあるため、ワイルドカード(*)は使わない
+  // origin が許可されている時だけ明示して返す
+  return {
+    ...(allowOrigin ? { "Access-Control-Allow-Origin": allowOrigin } : {}),
+    Vary: "Origin",
+    "Access-Control-Allow-Methods": "POST,OPTIONS",
+    "Access-Control-Allow-Headers": "content-type",
+    "Access-Control-Allow-Credentials": "true",
+    "Access-Control-Max-Age": "86400",
+  };
+}
+
+function jsonWithCors(req: Request, body: any, status: number) {
+  return NextResponse.json(body, { status, headers: corsHeaders(req) });
+}
 
 type FastPayload = {
   group_key?: string;
+  // 互換: raid_id にも battle_id にも対応
   raid_id?: string;
+  battle_id?: string;
   monster?: string | null;
   sender_user_id?: string; // uuid string
 };
 
-function badRequest(msg: string) {
-  return NextResponse.json(
-    { ok: false, error: msg },
-    { status: 400, headers: CORS_HEADERS }
-  );
-}
-
-// CORS preflight
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
+export async function OPTIONS(req: Request) {
+  return new NextResponse(null, { status: 204, headers: corsHeaders(req) });
 }
 
 export async function POST(req: Request) {
@@ -36,44 +48,45 @@ export async function POST(req: Request) {
   try {
     body = await req.json();
   } catch {
-    return badRequest("Invalid JSON");
+    return jsonWithCors(req, { ok: false, error: "Invalid JSON" }, 400);
   }
 
   const group_key = (body.group_key ?? "").trim() || "duo";
-  const raid_id = (body.raid_id ?? "").trim();
+
+  // ★参戦IDとして使うのは battle_id（8桁）想定。
+  // ただし互換のため raid_id が来た場合も受ける。
+  const idRaw = (body.battle_id ?? body.raid_id ?? "").trim();
   const monster = body.monster == null ? null : String(body.monster);
   const sender_user_id = (body.sender_user_id ?? "").trim();
 
-  // 必須チェック（fastはここだけ固くする）
-  if (!raid_id) return badRequest("raid_id is required");
-  if (!sender_user_id) return badRequest("sender_user_id is required");
+  if (!idRaw) return jsonWithCors(req, { ok: false, error: "battle_id (or raid_id) is required" }, 400);
+  if (!sender_user_id) return jsonWithCors(req, { ok: false, error: "sender_user_id is required" }, 400);
 
-  // 超軽量バリデーション（数字10桁想定だが、念のため緩め）
-  if (raid_id.length < 8 || raid_id.length > 12) {
-    return badRequest("raid_id looks invalid");
+  // 参戦ID(battle_id)は通常 8 文字の16進っぽい
+  // ただし念のため緩めに（実運用で弾きたいならここを厳格に）
+  if (idRaw.length < 6 || idRaw.length > 16) {
+    return jsonWithCors(req, { ok: false, error: "id looks invalid" }, 400);
   }
 
-  // service_role で insert/upsert（RLSの影響を受けない）
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !serviceKey) {
-    return NextResponse.json(
-      { ok: false, error: "Server misconfigured" },
-      { status: 500, headers: CORS_HEADERS }
-    );
+    return jsonWithCors(req, { ok: false, error: "Server misconfigured" }, 500);
   }
 
   const supabase = createClient(url, serviceKey, {
     auth: { persistSession: false },
   });
 
+  // テーブル定義は raids_fast（group_key, raid_id(unique), monster, sender_user_id）
+  // ここではカラム名を raid_id に統一して保存（中身は battle_id を入れる）
   const { error } = await supabase
     .from("raids_fast")
     .upsert(
       [
         {
           group_key,
-          raid_id,
+          raid_id: idRaw,
           monster,
           sender_user_id,
         },
@@ -81,12 +94,10 @@ export async function POST(req: Request) {
       { onConflict: "group_key,raid_id", ignoreDuplicates: true }
     );
 
-  // unique衝突でもOK扱いで204返す（速度優先でレスポンスを軽く）
   if (error) {
-    // ただしDB接続系のエラーはログだけ出して500
-    console.error("[api/fast] insert error", error);
-    return NextResponse.json({ ok: false }, { status: 500, headers: CORS_HEADERS });
+    console.error("[api/fast] upsert error", error);
+    return jsonWithCors(req, { ok: false }, 500);
   }
 
-  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
+  return new NextResponse(null, { status: 204, headers: corsHeaders(req) });
 }
