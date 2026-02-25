@@ -19,7 +19,7 @@ type Props = {
 const LS_AUTO_COPY = "duo_auto_copy_v1";
 
 export default function DuoClient({ groupKey }: Props) {
-  const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+  const supabase = useMemo(() => getSupabaseBrowserClient()!, []);
   const [myUserId, setMyUserId] = useState<string | null>(null);
 
   const [rows, setRows] = useState<RaidFastRow[]>([]);
