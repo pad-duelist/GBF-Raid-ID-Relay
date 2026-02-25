@@ -198,9 +198,6 @@ type FastPayload = {
   monster?: string | null;
   sender_user_id?: string; // uuid string
 
-  // 将来拡張（必要なら）
-  enemy_id?: string;
-  image_url?: string;
 };
 
 export async function OPTIONS(req: Request) {
@@ -250,8 +247,6 @@ export async function POST(req: Request) {
           raid_id: idRaw, // 中身は battle_id
           monster,
           sender_user_id,
-          enemy_id: body.enemy_id ?? null,
-          image_url: body.image_url ?? null,
         },
       ],
       { onConflict: "group_key,raid_id", ignoreDuplicates: true }
