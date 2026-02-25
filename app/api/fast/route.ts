@@ -4,6 +4,14 @@ import { createClient } from "@supabase/supabase-js";
 export const runtime = "nodejs"; // Edgeだと環境変数周りで詰むことがあるのでnode推奨
 export const dynamic = "force-dynamic";
 
+const CORS_HEADERS: Record<string, string> = {
+  // 速度検証中は * でOK（運用で絞りたくなったら後で origin チェックに変更）
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST,OPTIONS",
+  "Access-Control-Allow-Headers": "content-type",
+  "Access-Control-Max-Age": "86400",
+};
+
 type FastPayload = {
   group_key?: string;
   raid_id?: string;
@@ -12,7 +20,15 @@ type FastPayload = {
 };
 
 function badRequest(msg: string) {
-  return NextResponse.json({ ok: false, error: msg }, { status: 400 });
+  return NextResponse.json(
+    { ok: false, error: msg },
+    { status: 400, headers: CORS_HEADERS }
+  );
+}
+
+// CORS preflight
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
 }
 
 export async function POST(req: Request) {
@@ -43,7 +59,7 @@ export async function POST(req: Request) {
   if (!url || !serviceKey) {
     return NextResponse.json(
       { ok: false, error: "Server misconfigured" },
-      { status: 500 }
+      { status: 500, headers: CORS_HEADERS }
     );
   }
 
@@ -69,8 +85,8 @@ export async function POST(req: Request) {
   if (error) {
     // ただしDB接続系のエラーはログだけ出して500
     console.error("[api/fast] insert error", error);
-    return NextResponse.json({ ok: false }, { status: 500 });
+    return NextResponse.json({ ok: false }, { status: 500, headers: CORS_HEADERS });
   }
 
-  return new NextResponse(null, { status: 204 });
+  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
 }
