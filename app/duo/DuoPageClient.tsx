@@ -418,7 +418,9 @@ export default function DuoPageClient() {
 
                   <div className="min-w-0 flex-1">
                     <div className="text-sm truncate">{(r.monster ?? "").trim() || "不明なマルチ"}</div>
-                    <div className="text-xs text-slate-400">{formatTimeAgo(r.created_at)}</div>
+                    <div className="text-xs text-slate-400">
+  {formatTimeAgo(new Date(r.created_at))}
+</div>
                   </div>
 
                   <div className="font-mono text-base">{r.raid_id}</div>
