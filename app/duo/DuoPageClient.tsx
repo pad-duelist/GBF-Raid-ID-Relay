@@ -102,26 +102,30 @@ export default function DuoPageClient() {
   }, []);
 
   const writeClipboard = useCallback(async (text: string) => {
+    // 1) Clipboard API
     try {
       await navigator.clipboard.writeText(text);
       return true;
+    } catch {}
+
+    // 2) execCommand fallback
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      ta.style.top = "-9999px";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
     } catch {
-      try {
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.style.position = "fixed";
-        ta.style.opacity = "0";
-        document.body.appendChild(ta);
-        ta.focus();
-        ta.select();
-        const ok = document.execCommand("copy");
-        document.body.removeChild(ta);
-        return ok;
-      } catch {
-        return false;
-  }, []);
+      return false;
     }
-  }
+  }, []);
 
   const playNotifySound = useCallback(() => {
     if (!notifyEnabled) return;
