@@ -185,9 +185,13 @@ let lastBossBlockListFetched = 0;
 const BOSS_BLOCKLIST_TTL = 5 * 60 * 1000;
 
 function normalizeBossName(name: string): string {
-  return name.trim();
+  return (name ?? "")
+    .replace(/\u00A0/g, " ") // NBSP(見えない空白)
+    .replace(/\u3000/g, " ") // 全角スペース
+    .replace(/\r/g, "")      // CR混入対策
+    .replace(/\s+/g, " ")    // 連続空白を1つに
+    .trim();
 }
-
 async function loadBossBlockList(): Promise<Set<string>> {
   const now = Date.now();
 
@@ -222,12 +226,20 @@ async function loadBossBlockList(): Promise<Set<string>> {
     bossBlockList = set;
     lastBossBlockListFetched = now;
     return set;
-  } catch (e) {
-    console.error("loadBossBlockList error:", e);
-    bossBlockList = new Set();
-    lastBossBlockListFetched = now;
+} catch (e) {
+  console.error("loadBossBlockList error:", e);
+
+  // 重要：取得失敗で空Setに切り替えると、その間ブロックが無効化されて「たまに漏れる」原因になる
+  if (bossBlockList) {
+    // 失敗時は lastBossBlockListFetched を更新しない（次リクエストで早めに再取得させる）
     return bossBlockList;
   }
+
+  // 初回取得に失敗した場合だけ空（やむを得ない）
+  bossBlockList = new Set();
+  lastBossBlockListFetched = now;
+  return bossBlockList;
+}
 }
 
 async function isBossBlocked(name: string | null | undefined): Promise<boolean> {
