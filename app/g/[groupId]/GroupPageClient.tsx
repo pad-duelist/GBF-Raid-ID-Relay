@@ -243,6 +243,10 @@ function GroupPageInner({
   const sbRef = useRef<SupabaseClient | null>(null);
   const channelsRef = useRef<any[]>([]);
   const subscribedKeyRef = useRef<string | null>(null);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryCountRef = useRef<number>(0);
+  const MAX_RETRY = 5;
+  const BASE_RETRY_MS = 2000; // 2s, 4s, 8s, 16s, 32s
 
   const lastUserGestureAtRef = useRef<number>(0);
   const markUserGesture = useCallback(() => {
@@ -548,6 +552,11 @@ function GroupPageInner({
 
   // ===== Realtime購読セットアップ（複数グループ対応） =====
   const teardownRealtime = useCallback(async () => {
+    // リトライタイマーをクリア
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
     try {
       const sb = sbRef.current;
       const list = channelsRef.current;
@@ -651,13 +660,53 @@ function GroupPageInner({
     channels.forEach((ch) => {
       ch.subscribe((status: string) => {
         if (status === "SUBSCRIBED") {
-          // OK
+          // 購読成功 → リトライカウントをリセット
+          retryCountRef.current = 0;
         } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
           console.warn("realtime subscribe failed:", status);
+          scheduleRetry();
         }
       });
     });
   }, [targetGroupIds, targetKey, teardownRealtime, upsertIncomingRaid]);
+
+  // setupRealtime を Ref 経由で参照（scheduleRetry との相互依存を回避）
+  const setupRealtimeRef = useRef(setupRealtime);
+  useEffect(() => {
+    setupRealtimeRef.current = setupRealtime;
+  }, [setupRealtime]);
+
+  // ===== 購読失敗時の指数バックオフ再接続 =====
+  const scheduleRetry = useCallback(() => {
+    // すでにリトライ予約済みなら何もしない
+    if (retryTimerRef.current) return;
+
+    if (retryCountRef.current >= MAX_RETRY) {
+      console.error(
+        `realtime: ${MAX_RETRY}回リトライしましたが接続できませんでした。ページをリロードしてください。`
+      );
+      return;
+    }
+
+    const count = retryCountRef.current;
+    const delay = BASE_RETRY_MS * Math.pow(2, count); // 2s, 4s, 8s, 16s, 32s
+    retryCountRef.current = count + 1;
+
+    console.log(`realtime: ${delay}ms 後にリトライします (${count + 1}/${MAX_RETRY})`);
+
+    retryTimerRef.current = setTimeout(async () => {
+      retryTimerRef.current = null;
+      try {
+        // 既存チャンネルを破棄してから再セットアップ
+        subscribedKeyRef.current = null; // setupRealtimeの早期リターンを防ぐ
+        await teardownRealtime();
+        await setupRealtimeRef.current();
+      } catch (e) {
+        console.error("realtime retry failed:", e);
+        scheduleRetry(); // リトライ自体が失敗したら再スケジュール
+      }
+    }, delay);
+  }, [teardownRealtime]);
 
   useEffect(() => {
     let disposed = false;
