@@ -35,7 +35,7 @@ async function broadcastRaid(channelName: string, payload: any) {
     const ch = sb.channel(channelName);
 
     await new Promise<void>((resolve) => {
-      const t = setTimeout(() => resolve(), 400);
+      const t = setTimeout(() => resolve(), 1200);
       ch.subscribe((status: string) => {
         if (status === "SUBSCRIBED") {
           clearTimeout(t);
@@ -486,11 +486,6 @@ function shouldSuppressByMembers(memberCurrent: any, memberMax: any): boolean {
   return false;
 }
 
-// ===== OPTIONS (CORS preflight) =====
-export async function OPTIONS() {
-  return new NextResponse(null, { status: 204 });
-}
-
 // ===== GET =====
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -813,7 +808,7 @@ if (
     };
 
     const channelName = realtimeChannelNameForGroup(matchedGroupId);
-    broadcastRaid(channelName, payload); // intentional fire-and-forget: レスポンス後にLambdaが継続実行
+    await broadcastRaid(channelName, payload);
 
     return NextResponse.json({ ok: true }, { status: 200 });
   } catch (e) {
