@@ -3,6 +3,7 @@ export const dynamic = "force-dynamic";
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { computeRangeUtc, todayYmdJst, RankingPeriod } from "@/lib/rankingRange";
 
 type Poster = { sender_user_id: string; user_name: string | null; post_count: number };
 type Battle = { battle_name: string; post_count: number };
@@ -76,81 +77,67 @@ function mergePosters(posters: Poster[]): Poster[] {
   return merged;
 }
 
-// JST 5:00 境界で from/to を計算（ブラウザTZに依存しない）
-const JST_OFFSET_MIN = 9 * 60;
-
-function jstParts(nowUtc: Date) {
-  const shifted = new Date(nowUtc.getTime() + JST_OFFSET_MIN * 60 * 1000);
-  return {
-    y: shifted.getUTCFullYear(),
-    m: shifted.getUTCMonth(),
-    d: shifted.getUTCDate(),
-    dow: shifted.getUTCDay(), // 0=Sun..6=Sat
-    hh: shifted.getUTCHours(),
-  };
-}
-function addDaysJst(y: number, m: number, d: number, deltaDays: number) {
-  const t = new Date(Date.UTC(y, m, d) + deltaDays * 86400000);
-  return { y: t.getUTCFullYear(), m: t.getUTCMonth(), d: t.getUTCDate(), dow: t.getUTCDay() };
-}
-function makeInstantFromJst(y: number, m: number, d: number, hh: number, mm = 0, ss = 0) {
-  const utcMs = Date.UTC(y, m, d, hh, mm, ss) - JST_OFFSET_MIN * 60 * 1000;
-  return new Date(utcMs);
-}
-function effectiveJstDate(nowUtc: Date) {
-  const p = jstParts(nowUtc);
-  if (p.hh < 5) return addDaysJst(p.y, p.m, p.d, -1);
-  return { y: p.y, m: p.m, d: p.d, dow: p.dow };
-}
-
 type PeriodKey = "today" | "week" | "month";
 
-function computeFrom(nowUtc: Date, period: PeriodKey): Date {
-  const e = effectiveJstDate(nowUtc);
+function periodToRankingPeriod(p: PeriodKey): RankingPeriod {
+  if (p === "today") return "day";
+  return p;
+}
 
+// refDate (YYYY-MM-DD) を period に沿って ±1 移動する
+function navigateDate(refDate: string, period: PeriodKey, direction: -1 | 1): string {
+  const [y, m, d] = refDate.split("-").map(Number);
   if (period === "today") {
-    return makeInstantFromJst(e.y, e.m, e.d, 5, 0, 0);
+    const base = new Date(Date.UTC(y, m - 1, d));
+    base.setUTCDate(base.getUTCDate() + direction);
+    return base.toISOString().slice(0, 10);
   }
   if (period === "week") {
-    const diffFromMon = (e.dow + 6) % 7; // Mon=0
-    const mon = addDaysJst(e.y, e.m, e.d, -diffFromMon);
-    return makeInstantFromJst(mon.y, mon.m, mon.d, 5, 0, 0);
+    const base = new Date(Date.UTC(y, m - 1, d));
+    base.setUTCDate(base.getUTCDate() + direction * 7);
+    return base.toISOString().slice(0, 10);
   }
   // month
-  return makeInstantFromJst(e.y, e.m, 1, 5, 0, 0);
+  const newM = m - 1 + direction;
+  const date = new Date(Date.UTC(y, newM, 1));
+  const daysInMonth = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+  const clampedD = Math.min(d, daysInMonth);
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(clampedD).padStart(2, "0")}`;
 }
 
-// ★固定ウィンドウ（未来の終端）を返す
-function computeRange(nowUtc: Date, period: PeriodKey) {
-  const from = computeFrom(nowUtc, period);
+// refDate が today と同じ集計期間かどうか
+function isCurrentPeriod(period: PeriodKey, refDate: string): boolean {
+  const today = todayYmdJst();
+  const rp = periodToRankingPeriod(period);
+  try {
+    const { startUtc: rs } = computeRangeUtc(rp, refDate);
+    const { startUtc: ts } = computeRangeUtc(rp, today);
+    return rs === ts;
+  } catch {
+    return false;
+  }
+}
 
+const JST_OFFSET_MIN = 9 * 60;
+function jstDateStr(utcIso: string): string {
+  const d = new Date(utcIso);
+  const jst = new Date(d.getTime() + JST_OFFSET_MIN * 60 * 1000);
+  return `${jst.getUTCFullYear()}/${String(jst.getUTCMonth() + 1).padStart(2, "0")}/${String(jst.getUTCDate()).padStart(2, "0")}`;
+}
+
+function formatPeriodLabel(period: PeriodKey, startUtc: string, endUtc: string): string {
   if (period === "today") {
-    return { from, to: new Date(from.getTime() + 1 * 86400000) }; // 翌日 05:00 (排他)
+    return jstDateStr(startUtc);
   }
   if (period === "week") {
-    return { from, to: new Date(from.getTime() + 7 * 86400000) }; // 翌週 月曜 05:00 (排他)
+    // endUtc は排他なので -1s
+    const endInclusive = new Date(new Date(endUtc).getTime() - 1000).toISOString();
+    return `${jstDateStr(startUtc)} 〜 ${jstDateStr(endInclusive)}`;
   }
-  // month: from の“JST年月”から翌月1日 05:00 を作る
-  const fromShifted = new Date(from.getTime() + JST_OFFSET_MIN * 60 * 1000);
-  const y = fromShifted.getUTCFullYear();
-  const m = fromShifted.getUTCMonth();
-  const to = makeInstantFromJst(y, m + 1, 1, 5, 0, 0); // 翌月1日 05:00 (排他)
-  return { from, to };
-}
-
-function formatJst(dtUtc: Date) {
-  const shifted = new Date(dtUtc.getTime() + JST_OFFSET_MIN * 60 * 1000);
-  const y = shifted.getUTCFullYear();
-  const m = String(shifted.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(shifted.getUTCDate()).padStart(2, "0");
-  const hh = String(shifted.getUTCHours()).padStart(2, "0");
-  const mm = String(shifted.getUTCMinutes()).padStart(2, "0");
-  return `${y}/${m}/${d} ${hh}:${mm} (JST)`;
-}
-
-// to(排他) を “4:59” 表記に寄せる（to - 1分）
-function formatJstRangeEnd(toExclusiveUtc: Date) {
-  return formatJst(new Date(toExclusiveUtc.getTime() - 60 * 1000));
+  // month
+  const d = new Date(startUtc);
+  const jst = new Date(d.getTime() + JST_OFFSET_MIN * 60 * 1000);
+  return `${jst.getUTCFullYear()}年${jst.getUTCMonth() + 1}月`;
 }
 
 export default function RaidRankingsPage() {
@@ -159,6 +146,7 @@ export default function RaidRankingsPage() {
 
   const [groupId, setGroupId] = useState<string>("");
   const [period, setPeriod] = useState<PeriodKey>("today");
+  const [refDate, setRefDate] = useState<string>(() => todayYmdJst());
   const [limit, setLimit] = useState<number>(10);
 
   const [data, setData] = useState<ApiResponse | null>(null);
@@ -178,11 +166,38 @@ export default function RaidRankingsPage() {
     else router.push(`/`);
   }, [router, groupId]);
 
-  // ★現在時刻は使わず「未来の終端」まで表示
   const rangeInfo = useMemo(() => {
-    const now = new Date();
-    return computeRange(now, period);
+    try {
+      return computeRangeUtc(periodToRankingPeriod(period), refDate);
+    } catch {
+      const now = new Date().toISOString();
+      return { startUtc: now, endUtc: now };
+    }
+  }, [period, refDate]);
+
+  const periodLabel = useMemo(
+    () => formatPeriodLabel(period, rangeInfo.startUtc, rangeInfo.endUtc),
+    [period, rangeInfo]
+  );
+
+  const atCurrentPeriod = useMemo(() => isCurrentPeriod(period, refDate), [period, refDate]);
+
+  const handlePrev = useCallback(() => {
+    setRefDate((d) => navigateDate(d, period, -1));
   }, [period]);
+
+  const handleNext = useCallback(() => {
+    if (!atCurrentPeriod) setRefDate((d) => navigateDate(d, period, 1));
+  }, [period, atCurrentPeriod]);
+
+  const handlePeriodChange = useCallback((newPeriod: PeriodKey) => {
+    setPeriod(newPeriod);
+    setRefDate(todayYmdJst());
+  }, []);
+
+  const handleGoToToday = useCallback(() => {
+    setRefDate(todayYmdJst());
+  }, []);
 
   const fetchRankings = useCallback(async () => {
     if (!initialized) return;
@@ -193,13 +208,12 @@ export default function RaidRankingsPage() {
       const safeLimit = Math.max(1, limit);
       const fetchLimit = Math.min(200, safeLimit + 5);
 
-      const now = new Date();
-      const { from, to } = computeRange(now, period);
+      const { startUtc: from, endUtc: to } = computeRangeUtc(periodToRankingPeriod(period), refDate);
 
       const qs = new URLSearchParams();
       qs.set("limit", String(fetchLimit));
-      qs.set("from", from.toISOString());
-      qs.set("to", to.toISOString()); // ★固定ウィンドウ終端も送る（API側で使う）
+      qs.set("from", from);
+      qs.set("to", to);
       if (groupId.trim()) qs.set("groupId", groupId.trim());
       qs.set("_t", String(Date.now()));
 
@@ -222,12 +236,31 @@ export default function RaidRankingsPage() {
     } finally {
       setLoading(false);
     }
-  }, [initialized, period, limit, groupId]);
+  }, [initialized, period, refDate, limit, groupId]);
 
   useEffect(() => {
     if (!initialized) return;
     fetchRankings();
   }, [initialized, fetchRankings]);
+
+  const btnBase: React.CSSProperties = {
+    padding: "9px 12px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.2)",
+    background: "#1f2937",
+    color: "white",
+    cursor: "pointer",
+    fontWeight: 800,
+    whiteSpace: "nowrap",
+  };
+
+  const navBtnStyle = (disabled: boolean): React.CSSProperties => ({
+    ...btnBase,
+    padding: "7px 14px",
+    fontSize: 18,
+    opacity: disabled ? 0.3 : 1,
+    cursor: disabled ? "default" : "pointer",
+  });
 
   return (
     <div style={{ padding: 16, color: "white", maxWidth: 980, margin: "0 auto" }}>
@@ -238,14 +271,7 @@ export default function RaidRankingsPage() {
             position: "absolute",
             top: 0,
             right: 0,
-            padding: "9px 12px",
-            borderRadius: 10,
-            border: "1px solid rgba(255,255,255,0.2)",
-            background: "#111827",
-            color: "white",
-            cursor: "pointer",
-            fontWeight: 800,
-            whiteSpace: "nowrap",
+            ...btnBase,
           }}
         >
           ← グループへ戻る
@@ -263,7 +289,7 @@ export default function RaidRankingsPage() {
             <span style={{ opacity: 0.9 }}>期間</span>
             <select
               value={period}
-              onChange={(e) => setPeriod(e.target.value as PeriodKey)}
+              onChange={(e) => handlePeriodChange(e.target.value as PeriodKey)}
               style={{
                 padding: "8px 10px",
                 borderRadius: 10,
@@ -273,10 +299,9 @@ export default function RaidRankingsPage() {
                 fontWeight: 700,
               }}
             >
-              {/* ★表示は「今日 / 今週 / 今月」だけ */}
-              <option value="today">今日</option>
-              <option value="week">今週</option>
-              <option value="month">今月</option>
+              <option value="today">日</option>
+              <option value="week">週</option>
+              <option value="month">月</option>
             </select>
           </label>
 
@@ -300,25 +325,30 @@ export default function RaidRankingsPage() {
             />
           </label>
 
-          <button
-            onClick={fetchRankings}
-            style={{
-              padding: "9px 12px",
-              borderRadius: 10,
-              border: "1px solid rgba(255,255,255,0.2)",
-              background: "#1f2937",
-              color: "white",
-              cursor: "pointer",
-              fontWeight: 800,
-              whiteSpace: "nowrap",
-            }}
-          >
-            更新
-          </button>
+          <button onClick={fetchRankings} style={btnBase}>更新</button>
         </div>
 
-        <div style={{ marginTop: 8, opacity: 0.75, fontSize: 12 }}>
-          集計範囲: {formatJst(rangeInfo.from)} ～ {formatJstRangeEnd(rangeInfo.to)}
+        {/* 期間ナビゲーション */}
+        <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <button onClick={handlePrev} style={navBtnStyle(false)}>‹</button>
+
+          <span style={{ fontWeight: 800, fontSize: 15, minWidth: 200, textAlign: "center" }}>
+            {periodLabel}
+          </span>
+
+          <button
+            onClick={handleNext}
+            disabled={atCurrentPeriod}
+            style={navBtnStyle(atCurrentPeriod)}
+          >
+            ›
+          </button>
+
+          {!atCurrentPeriod && (
+            <button onClick={handleGoToToday} style={{ ...btnBase, background: "#374151", fontSize: 13 }}>
+              現在へ
+            </button>
+          )}
         </div>
 
         {error ? <div style={{ marginTop: 8, opacity: 0.9, fontSize: 12 }}>エラー: {error}</div> : null}

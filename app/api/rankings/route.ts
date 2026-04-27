@@ -27,33 +27,29 @@ export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
 
-    const days = toInt(searchParams.get("days"), 7, 1, 60);
     const limit = toInt(searchParams.get("limit"), 10, 1, 100);
-
-    // 現行URL互換: groupId 最優先
     const groupParam = (searchParams.get("groupId") ?? searchParams.get("group") ?? "").trim();
 
-    // 新: from/to（ISO）
     const fromIso = parseIso(searchParams.get("from"));
-    const toIso = parseIso(searchParams.get("to")); // 任意
+    const toIso = parseIso(searchParams.get("to"));
 
-    const posterArgs: any = {
-      p_days: days,
-      p_limit: limit,
+    // from/to が未指定の場合は days パラメータで補完
+    let resolvedFrom = fromIso;
+    let resolvedTo = toIso;
+    if (!resolvedFrom) {
+      const days = toInt(searchParams.get("days"), 7, 1, 60);
+      resolvedFrom = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    }
+    if (!resolvedTo) {
+      resolvedTo = new Date().toISOString();
+    }
+
+    const { data: posters, error: e1 } = await supabase.rpc("get_poster_rankings_hist", {
+      p_from_utc: resolvedFrom,
+      p_to_utc: resolvedTo,
       p_group: groupParam || null,
-      p_from: fromIso,
-      p_to: toIso,
-    };
-
-    const battleArgs: any = {
-      p_days: days,
       p_limit: limit,
-      p_group: groupParam || null,
-      p_from: fromIso,
-      p_to: toIso,
-    };
-
-    const { data: posters, error: e1 } = await supabase.rpc("get_poster_rankings", posterArgs);
+    });
     if (e1) {
       return NextResponse.json(
         { error: "poster_rankings_failed", details: e1.message },
@@ -61,7 +57,12 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const { data: battles, error: e2 } = await supabase.rpc("get_battle_rankings", battleArgs);
+    const { data: battles, error: e2 } = await supabase.rpc("get_battle_rankings_hist", {
+      p_from_utc: resolvedFrom,
+      p_to_utc: resolvedTo,
+      p_group: groupParam || null,
+      p_limit: limit,
+    });
     if (e2) {
       return NextResponse.json(
         { error: "battle_rankings_failed", details: e2.message },
@@ -71,11 +72,10 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json(
       {
-        days,
         limit,
         groupId: groupParam || "",
-        from: fromIso,
-        to: toIso,
+        from: resolvedFrom,
+        to: resolvedTo,
         posters: posters ?? [],
         battles: battles ?? [],
         generated_at: new Date().toISOString(),
