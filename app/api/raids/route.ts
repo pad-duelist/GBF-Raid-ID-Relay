@@ -35,7 +35,7 @@ async function broadcastRaid(channelName: string, payload: any) {
     const ch = sb.channel(channelName);
 
     await new Promise<void>((resolve) => {
-      const t = setTimeout(() => resolve(), 1200);
+      const t = setTimeout(() => resolve(), 400);
       ch.subscribe((status: string) => {
         if (status === "SUBSCRIBED") {
           clearTimeout(t);
@@ -808,7 +808,7 @@ if (
     };
 
     const channelName = realtimeChannelNameForGroup(matchedGroupId);
-    await broadcastRaid(channelName, payload);
+    broadcastRaid(channelName, payload); // intentional fire-and-forget: レスポンス後にLambdaが継続実行
 
     return NextResponse.json({ ok: true }, { status: 200 });
   } catch (e) {
