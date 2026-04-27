@@ -486,6 +486,11 @@ function shouldSuppressByMembers(memberCurrent: any, memberMax: any): boolean {
   return false;
 }
 
+// ===== OPTIONS (CORS preflight) =====
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204 });
+}
+
 // ===== GET =====
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
