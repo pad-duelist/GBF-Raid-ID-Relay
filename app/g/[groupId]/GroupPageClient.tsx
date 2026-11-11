@@ -24,6 +24,10 @@ type RaidRow = {
   created_at: string;
   sender_user_id?: string | null; // Realtime受信時の自分除外用（あってもなくてもOK）
   series?: string | null;
+  // サポーター遷移モード用（新しい拡張機能から届く。古い行は null）
+  raid_internal_id?: string | null;
+  quest_id?: string | null;
+  supporter_suffix?: string | null; // 例: "1/5/0/7"
 };
 
 const looksLikeUrl = (s: string | null | undefined): boolean =>
@@ -33,6 +37,14 @@ const NOTIFY_ENABLED_KEY = "gbf-raid-notify-enabled";
 const NOTIFY_VOLUME_KEY = "gbf-raid-notify-volume";
 const AUTO_COPY_ENABLED_KEY = "gbf-raid-auto-copy-enabled";
 const COPIED_IDS_KEY = "gbf-copied-raid-ids";
+
+// クリック時の動作：IDコピー（従来） / サポーター石選択画面へ遷移
+type ClickMode = "copy" | "supporter";
+const CLICK_MODE_KEY = "gbf-raid-click-mode";
+// クエストIDごとのURL末尾（1/5/0/7 など）を覚えておくキャッシュ
+const SUPPORTER_SUFFIX_CACHE_KEY = "gbf-supporter-suffix-by-quest";
+const GBF_SUPPORTER_BASE_URL = "https://game.granbluefantasy.jp/#quest/supporter_raid";
+const GBF_WINDOW_NAME = "gbf_raid_game";
 
 // 旧：参戦者数はグローバルキーのみだった（互換維持のため残す）
 const MEMBER_MAX_FILTER_KEY = "gbf-raid-member-max-filter";
@@ -218,6 +230,9 @@ function GroupPageInner({
   const prevFilterRef = useRef<string>("");
 
   const [copiedIds, setCopiedIds] = useState<Set<string>>(new Set());
+
+  const [clickMode, setClickMode] = useState<ClickMode>("copy");
+  const supporterSuffixCacheRef = useRef<Record<string, string>>({});
 
   const battleMap = useBattleNameMap();
   const { map: battleMappingMap } = useBattleMapping();
@@ -450,13 +465,84 @@ function GroupPageInner({
     void fetchRaids();
   }, [targetKey, fetchRaids]);
 
-  async function copyId(text: string, internalId?: string) {
+  // ===== サポーター遷移モード =====
+  // 同じクエストIDの他の行から末尾（1/5/0/7 など）を補完するためのマップ
+  const suffixByQuestFromRaids = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const r of raids) {
+      if (r.quest_id && r.supporter_suffix && !m[r.quest_id]) m[r.quest_id] = r.supporter_suffix;
+    }
+    return m;
+  }, [raids]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const cache = supporterSuffixCacheRef.current;
+    let changed = false;
+    for (const [qid, suffix] of Object.entries(suffixByQuestFromRaids)) {
+      if (cache[qid] !== suffix) {
+        cache[qid] = suffix;
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    try {
+      window.localStorage.setItem(SUPPORTER_SUFFIX_CACHE_KEY, JSON.stringify(cache));
+    } catch {}
+  }, [suffixByQuestFromRaids]);
+
+  // 内部レイドID + クエストID + 末尾 → サポーター石選択画面のURL（作れなければ null）
+  const buildSupporterUrl = (raid: RaidRow): string | null => {
+    const raidInternalId = (raid.raid_internal_id ?? "").toString().trim();
+    if (!/^\d+$/.test(raidInternalId)) return null;
+
+    const mapping = (battleMappingMap as any)?.[normalizeKey(getDisplayName(raid))];
+
+    const questId = ((raid.quest_id ?? mapping?.questId ?? "") as string).toString().trim();
+    if (!/^\d+$/.test(questId)) return null;
+
+    const suffix = (
+      raid.supporter_suffix ||
+      suffixByQuestFromRaids[questId] ||
+      supporterSuffixCacheRef.current[questId] ||
+      mapping?.supporterSuffix ||
+      ""
+    )
+      .toString()
+      .trim();
+    if (!/^\d+(\/\d+)*$/.test(suffix)) return null;
+
+    return `${GBF_SUPPORTER_BASE_URL}/${raidInternalId}/${questId}/${suffix}`;
+  };
+
+  function openSupporter(raid: RaidRow) {
+    markUserGesture();
+
+    const url = buildSupporterUrl(raid);
+    if (!url) {
+      // URLを作れない行（古い拡張機能からの送信など）は従来どおりIDコピー
+      void copyId(raid.raid_id, raid.id, "サポーターURLを作れないため、");
+      return;
+    }
+
+    // 同じ名前のタブを使い回す（2回目以降はハッシュだけ変わるので再読み込みなし）
+    const w = window.open(url, GBF_WINDOW_NAME);
+    try {
+      w?.focus();
+    } catch {}
+
+    addToCopied(raid.id);
+    setCopyMessage(`ID ${raid.raid_id} のサポーター選択画面を開きました`);
+    setTimeout(() => setCopyMessage(null), 1500);
+  }
+
+  async function copyId(text: string, internalId?: string, notePrefix = "") {
     markUserGesture();
     try {
       const ok = await writeClipboard(text);
       if (!ok) return;
 
-      setCopyMessage(`ID ${text} をコピーしました`);
+      setCopyMessage(`${notePrefix}ID ${text} をコピーしました`);
       setTimeout(() => setCopyMessage(null), 1500);
 
       if (internalId) addToCopied(internalId);
@@ -480,6 +566,19 @@ function GroupPageInner({
       if (!Number.isNaN(v) && v >= 0 && v <= 1) setNotifyVolume(v);
     }
     if (savedAutoCopy !== null) setAutoCopyEnabled(savedAutoCopy === "true");
+
+    const savedClickMode = window.localStorage.getItem(CLICK_MODE_KEY);
+    if (savedClickMode === "copy" || savedClickMode === "supporter") setClickMode(savedClickMode);
+
+    try {
+      const rawSuffix = window.localStorage.getItem(SUPPORTER_SUFFIX_CACHE_KEY);
+      if (rawSuffix) {
+        const parsed = JSON.parse(rawSuffix);
+        if (parsed && typeof parsed === "object") {
+          supporterSuffixCacheRef.current = { ...parsed, ...supporterSuffixCacheRef.current };
+        }
+      }
+    } catch {}
 
     // ★マルチ/シリーズ/参戦者数 ensure groupKey
     if (!groupKey) return;
@@ -510,6 +609,7 @@ function GroupPageInner({
     window.localStorage.setItem(NOTIFY_ENABLED_KEY, String(notifyEnabled));
     window.localStorage.setItem(NOTIFY_VOLUME_KEY, String(notifyVolume));
     window.localStorage.setItem(AUTO_COPY_ENABLED_KEY, String(autoCopyEnabled));
+    window.localStorage.setItem(CLICK_MODE_KEY, clickMode);
     window.localStorage.setItem(
       MEMBER_MAX_FILTER_KEY,
       memberMaxFilter == null ? "" : String(memberMaxFilter)
@@ -522,7 +622,16 @@ function GroupPageInner({
       keyForGroup(MEMBER_MAX_FILTER_KEY, groupKey),
       memberMaxFilter == null ? "" : String(memberMaxFilter)
     );
-  }, [groupKey, notifyEnabled, notifyVolume, autoCopyEnabled, bossFilter, seriesFilter, memberMaxFilter]);
+  }, [
+    groupKey,
+    notifyEnabled,
+    notifyVolume,
+    autoCopyEnabled,
+    clickMode,
+    bossFilter,
+    seriesFilter,
+    memberMaxFilter,
+  ]);
 
   useEffect(() => {
     autoCopyEnabledRef.current = autoCopyEnabled;
@@ -1086,6 +1195,37 @@ function GroupPageInner({
             </div>
 
             <div className="flex flex-wrap items-center gap-3 text-xs sm:text-sm">
+              <div
+                className="inline-flex rounded border border-slate-600 overflow-hidden"
+                role="group"
+                aria-label="クリック時の動作"
+              >
+                {(
+                  [
+                    ["copy", "IDコピー"],
+                    ["supporter", "サポーター遷移"],
+                  ] as const
+                ).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    aria-pressed={clickMode === mode}
+                    onClick={() => {
+                      markUserGesture();
+                      setClickMode(mode);
+                    }}
+                    className={
+                      "px-2 h-9 text-xs whitespace-nowrap transition-colors " +
+                      (clickMode === mode
+                        ? "bg-sky-600 text-white font-bold"
+                        : "bg-slate-800 text-slate-300 hover:bg-slate-700")
+                    }
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
               <label className="inline-flex items-center gap-1 cursor-pointer select-none">
                 <input
                   type="checkbox"
@@ -1166,13 +1306,23 @@ function GroupPageInner({
               const isAutoCopied = raid.id === lastAutoCopiedRaidId;
               const isCopied = copiedIds.has(raid.id);
 
+              const supporterMode = clickMode === "supporter";
+              const canOpenSupporter = supporterMode && buildSupporterUrl(raid) != null;
+
               return (
                 <div
                   key={raid.id}
                   onPointerDown={(e) => {
                     e.preventDefault();
                   }}
-                  onClick={() => copyId(raid.raid_id, raid.id)}
+                  onClick={() => (supporterMode ? openSupporter(raid) : copyId(raid.raid_id, raid.id))}
+                  title={
+                    !supporterMode
+                      ? "クリックでIDをコピー"
+                      : canOpenSupporter
+                      ? "クリックでサポーター選択画面へ"
+                      : "サポーターURLを作れないためIDコピーになります"
+                  }
                   className={
                     "flex items-center justify-between bg-slate-800/80 rounded-lg px-3 py-2 text-sm shadow cursor-pointer hover:bg-slate-700/80 transition-colors select-none" +
                     (isAutoCopied ? " ring-2 ring-emerald-400" : "") +
@@ -1194,6 +1344,16 @@ function GroupPageInner({
                           {raid.raid_id}
                         </span>
                         <span className="text-xs text-slate-400">{timeAgo}</span>
+                        {supporterMode &&
+                          (canOpenSupporter ? (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-600/30 text-sky-300 whitespace-nowrap">
+                              サポーター選択へ
+                            </span>
+                          ) : (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400 whitespace-nowrap">
+                              IDコピーのみ
+                            </span>
+                          ))}
                       </div>
                       <div className="text-xs text-slate-300">{labelName}</div>
                     </div>

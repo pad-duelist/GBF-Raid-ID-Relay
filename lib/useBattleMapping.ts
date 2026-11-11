@@ -7,6 +7,9 @@ export type BattleEntry = {
   rawName: string;   // 元の表記
   image?: string | null;
   series?: string | null;
+  // サポーター遷移モード用（任意列）：拡張機能から届かなかった場合の補完に使う
+  questId?: string | null;         // 列名: quest_id          例) 303141
+  supporterSuffix?: string | null; // 列名: supporter_suffix  例) 1/5/0/7
 };
 
 export function normalizeKey(s: string | null | undefined) {
@@ -108,6 +111,8 @@ export default function useBattleMapping() {
         const idxImage =
           headers.findIndex((h) => /^(image|img|url|battle_image|image_url)$/.test(h));
         const idxSeries = headers.findIndex((h) => /^(series|series_name)$/.test(h));
+        const idxQuestId = headers.findIndex((h) => /^(quest_id|questid)$/.test(h));
+        const idxSuffix = headers.findIndex((h) => /^(supporter_suffix|suffix)$/.test(h));
 
         const m: Record<string, BattleEntry> = {};
         for (let i = 1; i < rows.length; i++) {
@@ -117,6 +122,11 @@ export default function useBattleMapping() {
           const image = idxImage >= 0 ? (cols[idxImage] ?? "").toString().trim() : undefined;
           const seriesRaw = idxSeries >= 0 ? (cols[idxSeries] ?? "").toString().trim() : undefined;
           const series = seriesRaw && seriesRaw.length > 0 ? seriesRaw : undefined;
+          const questId = idxQuestId >= 0 ? (cols[idxQuestId] ?? "").toString().trim() : "";
+          const supporterSuffix =
+            idxSuffix >= 0
+              ? (cols[idxSuffix] ?? "").toString().trim().replace(/^\/+|\/+$/g, "")
+              : "";
           const key = normalizeKey(rawName);
           if (!key) continue;
           m[key] = {
@@ -124,6 +134,8 @@ export default function useBattleMapping() {
             rawName,
             image: image && image.length > 0 ? image : undefined,
             series: series ?? undefined,
+            questId: /^\d+$/.test(questId) ? questId : undefined,
+            supporterSuffix: /^\d+(\/\d+)*$/.test(supporterSuffix) ? supporterSuffix : undefined,
           };
         }
 

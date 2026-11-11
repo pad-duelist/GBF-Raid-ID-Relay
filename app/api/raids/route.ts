@@ -486,6 +486,64 @@ function shouldSuppressByMembers(memberCurrent: any, memberMax: any): boolean {
   return false;
 }
 
+// ===== raids の取得カラム =====
+const RAID_BASE_COLS = [
+  "id",
+  "group_id",
+  "group_name",
+  "raid_id",
+  "boss_name",
+  "battle_name",
+  "hp_value",
+  "hp_percent",
+  "member_current",
+  "member_max",
+  "user_name",
+  "created_at",
+  "sender_user_id",
+];
+
+// サポーター遷移モード用（supabase/add_supporter_columns.sql で追加するカラム）
+const RAID_SUPPORTER_COLS = ["raid_internal_id", "quest_id", "supporter_suffix"];
+
+// マイグレーション未適用でも既存機能を壊さないためのフォールバック
+// （カラムが無いと分かったら 5分間は旧カラムのみで動かす）
+let supporterColsMissingAt = 0;
+const SUPPORTER_COLS_RECHECK_MS = 5 * 60 * 1000;
+
+function supporterColsEnabled(): boolean {
+  return Date.now() - supporterColsMissingAt > SUPPORTER_COLS_RECHECK_MS;
+}
+
+function isMissingColumnError(error: any): boolean {
+  const code = String(error?.code ?? "");
+  const msg = String(error?.message ?? "");
+  return (
+    code === "42703" ||
+    code === "PGRST204" ||
+    /column .* does not exist/i.test(msg) ||
+    /could not find the .* column/i.test(msg)
+  );
+}
+
+function raidSelectCols(withSupporter: boolean): string {
+  return (withSupporter ? [...RAID_BASE_COLS, ...RAID_SUPPORTER_COLS] : RAID_BASE_COLS).join(",");
+}
+
+// 数字のみ（内部レイドID / クエストID）
+function digitsOrNull(v: any): string | null {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  return /^\d{1,20}$/.test(s) ? s : null;
+}
+
+// サポーターURL末尾（例: "1/5/0/7"）
+function supporterSuffixOrNull(v: any): string | null {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim().replace(/^\/+|\/+$/g, "");
+  return /^\d{1,6}(\/\d{1,6}){0,7}$/.test(s) ? s : null;
+}
+
 // ===== GET =====
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -529,54 +587,53 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    let query = sb
-      .from("raids")
-      .select(
-        [
-          "id",
-          "group_id",
-          "group_name",
-          "raid_id",
-          "boss_name",
-          "battle_name",
-          "hp_value",
-          "hp_percent",
-          "member_current",
-          "member_max",
-          "user_name",
-          "created_at",
-          "sender_user_id",
-        ].join(",")
-      )
-      .eq("group_id", matchedGroupId)
-      if (period && date) {
-  try {
-    const { startUtc, endUtc } = computeRangeUtc(period, date);
-    query = query.gte("created_at", startUtc).lt("created_at", endUtc);
-  } catch {
-    return NextResponse.json({ error: "invalid period/date" }, { status: 400 });
-  }
-}
+    let range: { startUtc: string; endUtc: string } | null = null;
+    if (period && date) {
+      try {
+        range = computeRangeUtc(period, date);
+      } catch {
+        return NextResponse.json({ error: "invalid period/date" }, { status: 400 });
+      }
+    }
 
-query = query
-  .order("created_at", { ascending: false })
-  .order("id", { ascending: false })
-  .limit(isNaN(Number(limitParam)) ? 50 : Number(limitParam));
+    const normalizedBossNameParam = bossNameParam ? await mapNormalize(bossNameParam) : null;
 
-    if (bossNameParam) {
-      const normalizedBossNameParam = await mapNormalize(bossNameParam);
+    const runQuery = (withSupporter: boolean) => {
+      let query = sb
+        .from("raids")
+        .select(raidSelectCols(withSupporter))
+        .eq("group_id", matchedGroupId);
+
+      if (range) {
+        query = query.gte("created_at", range.startUtc).lt("created_at", range.endUtc);
+      }
+
+      query = query
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(isNaN(Number(limitParam)) ? 50 : Number(limitParam));
+
       if (normalizedBossNameParam) {
         query = query.or(
           `boss_name.eq.${normalizedBossNameParam},battle_name.eq.${normalizedBossNameParam}`
         );
       }
-    }
 
-    if (excludeUserId) {
-      query = query.not("sender_user_id", "eq", excludeUserId);
-    }
+      if (excludeUserId) {
+        query = query.not("sender_user_id", "eq", excludeUserId);
+      }
 
-    const { data, error } = await query;
+      return query;
+    };
+
+    const withSupporter = supporterColsEnabled();
+    let { data, error } = await runQuery(withSupporter);
+
+    if (error && withSupporter && isMissingColumnError(error)) {
+      console.warn("[GET /api/raids] supporter columns missing; falling back");
+      supporterColsMissingAt = Date.now();
+      ({ data, error } = await runQuery(false));
+    }
 
     if (error) {
       console.error("[GET /api/raids] supabase error:", error);
@@ -757,45 +814,46 @@ if (
 }
 
     // ★重要：canonical_boss_name は「書かない」方針（NULLのまま運用）
-    const { data: inserted, error } = await sb
-      .from("raids")
-      .insert([
-        {
-          group_id: matchedGroupId,
-          group_name: groupNameForRow,
-          raid_id: raidId,
+    const baseRow = {
+      group_id: matchedGroupId,
+      group_name: groupNameForRow,
+      raid_id: raidId,
 
-          boss_name: bossName ?? null,
-          battle_name: battleName ?? null,
+      boss_name: bossName ?? null,
+      battle_name: battleName ?? null,
 
-          hp_value: hpValue == null ? null : Number(hpValue),
-          hp_percent: hpPercent == null ? null : Number(hpPercent),
+      hp_value: hpValue == null ? null : Number(hpValue),
+      hp_percent: hpPercent == null ? null : Number(hpPercent),
 
-          member_current: memberCurrent == null ? null : Number(memberCurrent),
-          member_max: memberMax == null ? null : Number(memberMax),
+      member_current: memberCurrent == null ? null : Number(memberCurrent),
+      member_max: memberMax == null ? null : Number(memberMax),
 
-          user_name: userName ?? null,
-          sender_user_id: senderUserId,
-        },
-      ])
-      .select(
-        [
-          "id",
-          "group_id",
-          "group_name",
-          "raid_id",
-          "boss_name",
-          "battle_name",
-          "hp_value",
-          "hp_percent",
-          "member_current",
-          "member_max",
-          "user_name",
-          "created_at",
-          "sender_user_id",
-        ].join(",")
-      )
-      .single();
+      user_name: userName ?? null,
+      sender_user_id: senderUserId,
+    };
+
+    // サポーター遷移モード用（旧バージョンの拡張機能からは来ないので NULL）
+    const supporterRow = {
+      raid_internal_id: digitsOrNull(body.raidInternalId ?? body.raid_internal_id),
+      quest_id: digitsOrNull(body.questId ?? body.quest_id),
+      supporter_suffix: supporterSuffixOrNull(body.supporterSuffix ?? body.supporter_suffix),
+    };
+
+    const insertRaid = (withSupporter: boolean) =>
+      sb
+        .from("raids")
+        .insert([withSupporter ? { ...baseRow, ...supporterRow } : baseRow])
+        .select(raidSelectCols(withSupporter))
+        .single();
+
+    const withSupporter = supporterColsEnabled();
+    let { data: inserted, error } = await insertRaid(withSupporter);
+
+    if (error && withSupporter && isMissingColumnError(error)) {
+      console.warn("[POST /api/raids] supporter columns missing; falling back");
+      supporterColsMissingAt = Date.now();
+      ({ data: inserted, error } = await insertRaid(false));
+    }
 
     if (error) {
       console.error("[POST /api/raids] supabase error:", error);
