@@ -143,6 +143,18 @@ export default function ExtensionUserIdPage() {
           に貼り付けることで、拡張機能から送信されたIDと、あなたのアカウントが紐づきます。
         </p>
 
+        <div className="mb-4 flex items-center justify-between rounded border border-gray-600 bg-gray-900 px-3 py-2 text-sm">
+          <div className="text-xs text-gray-300">
+            拡張機能をまだ入れていない・更新したい場合
+          </div>
+          <a
+            href="/extension"
+            className="rounded bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-700 whitespace-nowrap"
+          >
+            拡張機能のダウンロードへ
+          </a>
+        </div>
+
         {userError && (
           <p className="text-sm text-red-400">
             {userError}{" "}

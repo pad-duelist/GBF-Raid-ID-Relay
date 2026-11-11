@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GBF_raid_id_relay",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "description": "グラブル参戦IDをGBF Raid ID Relayに自動送信する拡張機能（複数グループ送信対応）",
   "permissions": [
     "storage",

@@ -71,6 +71,46 @@ function normalizeGroupIds(input) {
   );
 }
 
+// --- 同梱の defaults.json から初期設定を入れる ---
+// サイトのDLページがzipに書き込む（userId / groupIds / userName）。
+// 未設定の項目だけ埋めるので、設定済みの人が更新しても上書きしない。
+async function applyBundledDefaults() {
+  try {
+    const res = await fetch(chrome.runtime.getURL("defaults.json"));
+    if (!res.ok) return;
+    const d = await res.json();
+    if (!d || typeof d !== "object") return;
+
+    const cur = await getSyncConfigRaw();
+    const patch = {};
+
+    const userId = String(d.userId ?? "").trim();
+    if (userId && !String(cur.userId ?? "").trim()) patch.userId = userId;
+
+    const groups = normalizeGroupIds(d.groupIds);
+    const hasGroups =
+      normalizeGroupIds(cur.groupIds).length > 0 || normalizeGroupIds(cur.groupId).length > 0;
+    if (groups.length > 0 && !hasGroups) {
+      patch.groupIds = groups;
+      patch.groupId = groups[0]; // 旧キー互換
+    }
+
+    const userName = String(d.userName ?? "").trim();
+    if (userName && !String(cur.userName ?? "").trim()) patch.userName = userName;
+
+    if (Object.keys(patch).length === 0) return;
+    chrome.storage.sync.set(patch, () => {
+      console.log("[GBF Raid] bundled defaults applied:", Object.keys(patch));
+    });
+  } catch (e) {
+    // defaults.json が無い・壊れている場合は何もしない
+  }
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  void applyBundledDefaults();
+});
+
 // payload -> API（複数groupIdに送る）
 async function postRaidToApi(payload) {
   try {

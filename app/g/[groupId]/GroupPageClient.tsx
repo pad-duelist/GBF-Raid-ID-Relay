@@ -1273,6 +1273,15 @@ function GroupPageInner({
               >
                 更新
               </button>
+
+              <button
+                type="button"
+                onClick={() => router.push("/extension-token")}
+                title="ユーザーID・所属グループ・拡張機能の案内ページへ"
+                className="bg-slate-700 hover:bg-slate-600 text-xs px-2 py-1 rounded h-9 flex items-center whitespace-nowrap"
+              >
+                ユーザーID・グループ
+              </button>
             </div>
           </div>
         </header>
