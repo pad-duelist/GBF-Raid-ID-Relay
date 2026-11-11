@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>GBF Raid ID Relay 設定</title>
+  <style>
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 16px; }
+    label { display: block; margin-top: 12px; }
+    input[type="text"], input[type="url"], textarea { width: 100%; box-sizing: border-box; padding: 6px 8px; }
+    textarea { min-height: 90px; resize: vertical; }
+    button { margin-top: 16px; padding: 6px 12px; }
+    #status { margin-top: 8px; font-size: 12px; color: #008000; }
+    small { font-size: 11px; color: #555; display:block; margin-top:6px; line-height:1.4; }
+  </style>
+</head>
+<body>
+  <h1>GBF Raid ID Relay 設定</h1>
+
+  <label>
+    送信先URL（必須）:
+    <input id="apiBaseUrl" type="url" />
+  </label>
+
+  <label>
+    グループ（複数可）:
+    <textarea id="groupIds" placeholder="例: Apoklisi&#10;Lost-fragments&#10;friends1"></textarea>
+    <small>改行またはカンマ区切りで複数指定できます（重複・空行は自動で除外されます）。</small>
+  </label>
+
+  <label>
+    ハンドルネーム:
+    <input id="userName" type="text" />
+  </label>
+
+  <label>
+    ユーザーID:
+    <input id="userId" type="text" />
+    <small>サイトの「拡張機能用ユーザーID」ページに表示されるIDを貼り付けてください。</small>
+  </label>
+
+  <button id="save">保存</button>
+  <div id="status"></div>
+
+  <script src="options.js"></script>
+</body>
+</html>

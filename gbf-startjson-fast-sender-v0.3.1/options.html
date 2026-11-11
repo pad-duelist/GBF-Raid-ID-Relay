@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>GBF Fast Sender - Options</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 16px; }
+    .card { max-width: 720px; border: 1px solid #ddd; border-radius: 12px; padding: 16px; }
+    label { display:block; font-weight: 600; margin-bottom: 8px; }
+    input { width: 100%; padding: 10px 12px; font-size: 14px; border: 1px solid #ccc; border-radius: 10px; }
+    .row { display:flex; gap: 10px; margin-top: 12px; align-items:center; }
+    button { padding: 10px 12px; border-radius: 10px; border: 1px solid #ccc; background: #f7f7f7; cursor:pointer; }
+    button:hover { background:#eee; }
+    .hint { color:#555; font-size: 13px; margin-top: 10px; line-height: 1.6; }
+    .status { margin-left: 8px; font-size: 13px; color: #0a7; }
+    .status.err { color:#c00; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2 style="margin-top:0;">GBF Start.json Fast Sender</h2>
+
+    <label for="uid">ユーザーID（Supabase Authの user.id / profiles.user_id）</label>
+    <input id="uid" placeholder="例: 461f0458-5494-47fc-b142-98e3eb389bdd" />
+
+    <div class="row">
+      <button id="save">保存</button>
+      <button id="clear">クリア</button>
+      <span id="status" class="status" aria-live="polite"></span>
+    </div>
+
+    <div class="hint">
+      あなたのサイトに表示される「拡張機能用ユーザーID」をここに貼り付けて保存してください。
+    </div>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

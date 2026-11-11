@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "GBF Start.json Fast Sender",
+  "version": "0.3.1",
+  "description": "Injects hook into page context to capture /rest/multiraid/start.json and send battle_id+monster fast.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://game.granbluefantasy.jp/*",
+    "https://*.granbluefantasy.jp/*"
+  ],
+  "options_page": "options.html",
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "injected.js"
+      ],
+      "matches": [
+        "https://game.granbluefantasy.jp/*",
+        "https://*.granbluefantasy.jp/*"
+      ]
+    }
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://game.granbluefantasy.jp/*",
+        "https://*.granbluefantasy.jp/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
+}
